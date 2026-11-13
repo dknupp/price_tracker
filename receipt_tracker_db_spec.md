@@ -19,12 +19,12 @@ Sample questions the database must be able to answer:
 
 ## 2. Background & Design Principles
 
-- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and the reports show "N/A". It never stores a guess.
-- **Money is stored as integer cents.** This avoids floating-point rounding errors. Earlier hand arithmetic on this project produced a $1.00 addition error and a wrong "You Paid" value, so totals are checked by code, not by eye.
+- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and the reports show "?" (not yet known, as opposed to not applicable). It never stores a guess.
+- **Money is stored as integer cents.** This avoids floating-point rounding errors.
 - **Receipt text is not the product.** Receipts print abbreviations ("KS ALBACORE", "PE GRANOLA", "TF Sld Chp Thai Chil"). A mapping table connects each store's receipt text and item code to one canonical product, so the same product can be compared across stores.
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
-- **Discounts are kept separate from price.** Price, discount, and amount paid are all stored, so the original shelf price and the markdown stay visible (for example, the Costco chili at $18.79, marked down $4.80).
+- **Discounts are kept separate from price.** In addition to the amount paid, the original shelf price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
 
 ## 3. Technology
 
@@ -233,7 +233,7 @@ LEFT JOIN unit_conversions u ON u.unit = p.unit_measure
 WHERE l.line_type = 'item';
 ```
 
-Reports display NULL as "N/A". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
+Reports display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
 ### Derived view: expiration
 
@@ -320,7 +320,7 @@ Answers update the `products` row, which fixes every past and future trip that u
 
 ## 8. Edge Cases & Error Handling
 
-- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "N/A" for unit price. The two Trader Joe's BBQ salmon lines are the example.
+- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
 - **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_c`, not a new line.
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
@@ -349,7 +349,7 @@ Every load prints:
 - [ ] Loading the Oct 30, 2026 Costco receipt flags the second albacore tuna line as a suspected duplicate.
 - [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
 - [ ] `--unit-prices tuna` shows Trader Joe's at about $1.99 per can and Costco at about $2.37 per can, with the Costco duplicate excluded or marked.
-- [ ] A product with no pack size shows "N/A" in unit-price reports, never a guessed number.
+- [ ] A product with no pack size shows "?" in unit-price reports, never a guessed number.
 - [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
 - [ ] The FSA report shows the Costco ibuprofen with tax at $12.17.
