@@ -183,15 +183,6 @@ CREATE TABLE disputes (
   resolved_on TEXT
 );
 
-CREATE TABLE shelf_prices (
-  shelf_id      INTEGER PRIMARY KEY,
-  store_id      INTEGER NOT NULL REFERENCES stores,
-  product_id    INTEGER REFERENCES products,
-  shelf_price_c INTEGER NOT NULL,
-  photo_path    TEXT,
-  seen_at       TEXT NOT NULL
-);
-
 CREATE INDEX idx_trips_date        ON trips (trip_date);
 CREATE INDEX idx_lines_trip        ON line_items (trip_id);
 CREATE INDEX idx_lines_store_item  ON line_items (store_item_id);
@@ -361,8 +352,8 @@ Every load prints:
 ## 11. Out of Scope (v1)
 
 - Reading receipt photos automatically in code (done by Claude in conversation).
-- The shelf-price comparison workflow beyond the `shelf_prices` table.
-- A phone or web interface.
+- Shelf-price photos and comparing shelf prices with receipt prices (feature idea 3).
+- A phone or web interface of the tool's own. Receipt photos are sent through a Claude conversation, which works from a phone.
 - Multi-user support and sign-in.
 - Currency other than US dollars.
 - Automatic submission of FSA claims or store refund requests.
@@ -371,6 +362,5 @@ Every load prints:
 
 - Should products have a parent "generic item" level, such as "canned tuna" above Kirkland, Trader Joe's, and Bumble Bee, for category-wide price comparisons?
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
-- Should shelf-price photos be matched to products by hand, or suggested by the tool and confirmed?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
 - At stores with no item codes, how should two different products that print identical receipt text be told apart?

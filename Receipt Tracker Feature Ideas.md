@@ -23,6 +23,7 @@ While shopping, the user uploads photos of shelf price tags. After checkout, the
 
 - **Match photos to receipt lines:** Pair each shelf photo with its receipt item.
 - **Flag mismatches:** Report any item charged at a different price than the shelf tag, including missed sale prices or discounts, so the user can ask for a correction before leaving.
+- **Storage sketch (removed from the v1 spec):** a `shelf_prices` table with store, product (NULL until matched), shelf price in cents, photo path, and when it was seen. Open question carried over: should shelf photos be matched to products by hand, or suggested by the tool and confirmed?
 
 ## 4. FSA item flagging
 
