@@ -67,9 +67,9 @@ CREATE TABLE stores (
   chain         TEXT NOT NULL,        -- Safeway, Trader Joe's, Costco, Grocery Outlet
   branch        TEXT,                 -- Lake Merritt, San Leandro
   store_number  TEXT,                 -- 3132, 0203, 118, 624
-  address       TEXT,
-  UNIQUE (chain, store_number)
+  address       TEXT
 );
+CREATE UNIQUE INDEX ux_stores ON stores (chain, COALESCE(store_number, ''));
 
 CREATE TABLE trips (
   trip_id        INTEGER PRIMARY KEY,
@@ -85,7 +85,7 @@ CREATE TABLE trips (
   receipt_image  TEXT,                -- path to the receipt photo
   needs_review   INTEGER NOT NULL DEFAULT 0,
   notes          TEXT,
-  UNIQUE (store_id, transaction_no)
+  UNIQUE (store_id, transaction_no)   -- trips with no transaction_no never conflict here; see 7.1 step 2
 );
 
 CREATE TABLE unit_conversions (
@@ -108,18 +108,24 @@ CREATE TABLE products (
   unit_measure  TEXT REFERENCES unit_conversions,  -- oz, fl oz, g, kg, lb, mL, L, ct, dozen; NULL if unknown
   sold_by_weight INTEGER NOT NULL DEFAULT 0,
   is_fsa        INTEGER NOT NULL DEFAULT 0,
-  is_organic    INTEGER CHECK (is_organic IN (0,1)),  -- 1 organic, 0 not organic, NULL unknown (never guessed)
-  UNIQUE (brand, name, pack_count, unit_size, unit_measure, is_organic)
+  is_organic    INTEGER CHECK (is_organic IN (0,1))   -- 1 organic, 0 not organic, NULL unknown (never guessed)
+);
+CREATE UNIQUE INDEX ux_products ON products (
+  COALESCE(brand, ''), name, COALESCE(pack_count, -1), COALESCE(unit_size, -1),
+  COALESCE(unit_measure, ''), COALESCE(is_organic, -1)
 );
 
 CREATE TABLE store_items (
   store_item_id INTEGER PRIMARY KEY,
   store_id      INTEGER NOT NULL REFERENCES stores,
   item_code     TEXT,                 -- may be NULL (Trader Joe's prints none)
-  receipt_text  TEXT NOT NULL,        -- text as first printed for this code (each line keeps its own copy in line_items.raw_text)
-  product_id    INTEGER REFERENCES products,   -- NULL until identified
-  UNIQUE (store_id, item_code, receipt_text)
+  receipt_text  TEXT NOT NULL,        -- with a code: text as first printed for it; without one: the identifier
+                                      -- (each line keeps its own copy in line_items.raw_text)
+  product_id    INTEGER REFERENCES products    -- NULL until identified
 );
+-- A printed item code identifies the item; the text is the identifier only when there is no code.
+CREATE UNIQUE INDEX ux_store_items_code ON store_items (store_id, item_code)    WHERE item_code IS NOT NULL;
+CREATE UNIQUE INDEX ux_store_items_text ON store_items (store_id, receipt_text) WHERE item_code IS NULL;
 
 CREATE TABLE line_items (
   line_id        INTEGER PRIMARY KEY,
@@ -187,6 +193,8 @@ CREATE INDEX idx_lines_trip        ON line_items (trip_id);
 CREATE INDEX idx_lines_store_item  ON line_items (store_item_id);
 CREATE INDEX idx_store_items_prod  ON store_items (product_id);
 ```
+
+**Uniqueness with optional columns.** SQL never treats two NULLs as equal in a `UNIQUE` constraint, so a plain `UNIQUE` over a column that may be NULL would let a re-run insert duplicate stores, products or Trader Joe's items. The unique indexes above therefore either map NULL to a placeholder with `COALESCE` or split the rule with a partial index. The loader's find-or-create lookups must match NULL to NULL the same way (`IS`, not `=`).
 
 ### Derived view: unit price
 
@@ -263,10 +271,10 @@ This is display only (feature idea 13): no new stored column, since price, disco
 ## 7. Behavior
 
 ### 7.1 Loading a trip
-1. Find or create the store (by chain and store number).
+1. Find or create the store (by chain and store number; a missing store number matches a missing one).
 2. If the trip's `(store_id, transaction_no)` already exists, reject it and report "already logged" (the duplicate Aug 11 upload would have been caught this way). If there is no transaction number, warn when a trip with the same store, date, and total already exists.
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
-4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row from the item code and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
+4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
 6. Print the load summary (section 9).
 
@@ -312,8 +320,8 @@ Answers update the `products` row, which fixes every past and future trip that u
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
 - **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments`, not on a line.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
-- **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), each line keeps its own text in `line_items.raw_text`.
-- **Same text, different product** (for example "Granola"): `store_items` is keyed on store, code, and text together, and the user can split a mapping.
+- **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
+- **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
 - **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt attach to the same trip.
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
 - **Re-running a load or import**: must not crash or double-insert.
@@ -359,3 +367,4 @@ Every load prints:
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
 - Should shelf-price photos be matched to products by hand, or suggested by the tool and confirmed?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
+- At stores with no item codes, how should two different products that print identical receipt text be told apart?
