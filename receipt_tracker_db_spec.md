@@ -59,7 +59,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 
 - A SQLite database file.
 - Load summary on every run (see section 9).
-- CSV or JSON from any report on request.
+- Report results, printed to the terminal. A report can print CSV or JSON instead, for redirecting to a file on request; the tool itself never saves report files.
 
 ## 6. Schema
 
