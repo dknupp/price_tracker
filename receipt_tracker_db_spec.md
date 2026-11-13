@@ -4,18 +4,18 @@ Oct 30, 2026
 
 ## 1. Purpose
 
-Store grocery trips (one receipt = one trip) in a SQL database so that prices can be compared over time and across stores, and so that receipt problems (double charges, price mismatches) can be caught and tracked.
+Submit photographs of grocery trips (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
 
-The database replaces the table-per-trip layout of the current doc. The doc was good for getting started, but it can't answer questions like "what is my cost per can of tuna across all stores?" without re-reading every table by hand.
+Receipt photos can be uploaded from a phone before even leaving the store.
 
-Questions the database must be able to answer:
+Sample questions the database must be able to answer:
 
 - What did I pay per unit (can, roll, ounce, pound) for a product at each store, over time?
 - Which products do I buy most often?
 - Did any receipt charge me for the same item twice?
 - How much did I spend in a month, per store, per category?
 - What FSA-eligible items did I buy, and what is the FSA total including tax?
-- Does the receipt price match the shelf price I photographed?
+- Given a shopping list of items, how could I maximize savings (either constrained to one store, or if willing to stop at multiple stores)?
 
 ## 2. Background & Design Principles
 
