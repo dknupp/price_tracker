@@ -2,8 +2,6 @@
 
 Oct 30, 2026
 
-Designed from the 16 receipts logged so far in the "Grocery Price Tracker" doc (Safeway, Trader Joe's, Costco, Grocery Outlet; June 25 – Nov 10, 2026).
-
 ## 1. Purpose
 
 Store grocery trips (one receipt = one trip) in a SQL database so that prices can be compared over time and across stores, and so that receipt problems (double charges, price mismatches) can be caught and tracked.
