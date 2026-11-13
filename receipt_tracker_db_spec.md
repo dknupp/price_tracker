@@ -30,8 +30,6 @@ Sample questions the database must be able to answer:
 
 - **Language:** Python 3.
 - **Database:** SQLite via the standard library `sqlite3` module, one file (`receipts.db`). The schema uses plain SQL, so it ports to PostgreSQL later.
-- **CLI argument parsing:** `argparse`.
-- **Exports:** standard library `csv` and `json`.
 
 **PostgreSQL portability.** The schema avoids SQLite-only features except two, which need a one-line change when porting:
 - `PRAGMA foreign_keys = ON` is SQLite-only. PostgreSQL always enforces foreign keys, so the line is dropped.
