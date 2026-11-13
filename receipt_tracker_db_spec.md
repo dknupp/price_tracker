@@ -46,7 +46,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--db` (optional): database path. Defaults to `receipts.db`.
 - `--image` (optional): path to the receipt photo, stored with the trip.
 
-### Bulk import (`import_doc.py`)
+### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
 
 ### Reports (`report.py`)
@@ -305,7 +305,7 @@ Answers update the `products` row, which fixes every past and future trip that u
 - Reports and recipe suggestions use a view that returns the printed date when present and otherwise the estimate, plus a column saying which one was used ("printed" or "estimated").
 
 ### 7.6 Bulk import of trip history
-`import_doc.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing. The column list is defined together with the trip JSON format.
+`import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing. The column list is defined together with the trip JSON format.
 
 The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers, so duplicate detection for those trips uses store, date, and total. Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
 
