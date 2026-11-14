@@ -140,8 +140,8 @@ CREATE TABLE line_items (
   line_type      TEXT NOT NULL DEFAULT 'item'
                  CHECK (line_type IN ('item','deposit','bag_fee')),
   quantity       REAL NOT NULL DEFAULT 1,
-  weight         REAL,                -- for by-weight items
-  weight_unit    TEXT,
+  weight         REAL CHECK (weight > 0),   -- for by-weight items, as printed
+  weight_unit    TEXT REFERENCES unit_conversions,   -- lb, kg, oz as printed; required when weight is given
   price_c        INTEGER NOT NULL,    -- before discount
   discount_c     INTEGER NOT NULL DEFAULT 0,
   paid_c         INTEGER NOT NULL,
@@ -150,6 +150,7 @@ CREATE TABLE line_items (
   expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
   expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
   CHECK (paid_c = price_c - discount_c),   -- the loader computes paid_c, so this never fails a load (7.2)
+  CHECK ((weight IS NULL) = (weight_unit IS NULL)),
   UNIQUE (trip_id, line_no)
 );
 
@@ -196,29 +197,36 @@ CREATE VIEW v_unit_price AS
 SELECT
   l.line_id, t.trip_date, s.chain, p.brand, p.name,
   l.paid_c,
+  -- Packaged items: per pack unit (can, roll) and per the product's unit_measure.
+  -- By-weight items: no pack unit; the measure is the weight unit the receipt printed.
   CASE
-    WHEN p.sold_by_weight = 1 AND l.weight IS NULL THEN NULL
-    WHEN p.sold_by_weight = 1 THEN l.paid_c / l.weight
-    WHEN p.pack_count IS NULL THEN NULL
+    WHEN p.sold_by_weight = 1 OR p.pack_count IS NULL THEN NULL
     ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count)
   END AS cents_per_pack_unit,
   CASE
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_c / l.weight
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL THEN NULL
     ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size)
   END AS cents_per_measure_unit,
-  u.base_unit,
+  CASE WHEN p.sold_by_weight = 1 THEN l.weight_unit ELSE p.unit_measure END AS measure_unit,
+  CASE WHEN p.sold_by_weight = 1 THEN uw.base_unit  ELSE u.base_unit    END AS base_unit,
   CASE
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_c / (l.weight * uw.factor)
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL OR u.factor IS NULL THEN NULL
     ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size * u.factor)
   END AS cents_per_base_unit   -- per g, mL or ct; multiply by 453.592 for per lb, 28.3495 for per oz
+  -- Any unknown input (weight, pack count, unit size) makes the result NULL, shown as "?".
 FROM line_items l
 JOIN trips t        ON t.trip_id = l.trip_id
 JOIN stores s       ON s.store_id = t.store_id
 JOIN store_items si ON si.store_item_id = l.store_item_id
 JOIN products p     ON p.product_id = si.product_id
-LEFT JOIN unit_conversions u ON u.unit = p.unit_measure
+LEFT JOIN unit_conversions u  ON u.unit  = p.unit_measure
+LEFT JOIN unit_conversions uw ON uw.unit = l.weight_unit
 WHERE l.line_type = 'item';
 ```
+
+By-weight items compare across stores the same way as packaged ones: grapes bought at 2.5 lb for $4.98 and at 1.2 kg for $5.28 both come out in cents per gram (0.439¢ and 0.440¢, or about $1.99 and $2.00 per lb), whatever unit each receipt printed. A by-weight line with no printed weight shows "?" in every unit-price column.
 
 Reports display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
