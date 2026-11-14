@@ -33,6 +33,6 @@ These come from past errors on the project and are checked by the acceptance cri
 
 ## Data model in brief
 
-Receipt text maps to a canonical product through `store_items`, which is keyed on `(store_id, item_code, receipt_text)`. Trader Joe's prints no item codes, so `item_code` is NULL and the text is the identifier. This mapping is what makes cross-store comparison possible: `line_items → store_items → products`, with `products.unit_measure → unit_conversions` for normalization. A `store_items.product_id` that is NULL means the item isn't identified yet, and the trip is flagged for review.
+Receipt text maps to a canonical product through `store_items`, which is keyed on `(store_id, item_code)` when the receipt prints a code and on `(store_id, receipt_text)` when it doesn't. Trader Joe's prints no item codes, so `item_code` is NULL and the text is the identifier. This mapping is what makes cross-store comparison possible: `line_items → store_items → products`, with `products.unit_measure → unit_conversions` for normalization. A `store_items.product_id` that is NULL means the item isn't identified yet, and the trip is flagged for review.
 
 Receipt photos are read by Claude in conversation for v1, not by code in this project (spec section 11).
