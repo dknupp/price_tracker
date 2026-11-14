@@ -137,7 +137,7 @@ CREATE TABLE line_items (
   raw_text       TEXT NOT NULL,       -- this line exactly as printed on the receipt; never edited
   raw_discount_text TEXT,             -- printed discount line folded into this item, exactly as printed
   line_type      TEXT NOT NULL DEFAULT 'item'
-                 CHECK (line_type IN ('item','deposit','bag_fee','discount')),
+                 CHECK (line_type IN ('item','deposit','bag_fee')),
   quantity       REAL NOT NULL DEFAULT 1,
   weight         REAL,                -- for by-weight items
   weight_unit    TEXT,
