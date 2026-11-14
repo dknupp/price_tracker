@@ -42,7 +42,8 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 ### Loader (`load_trip.py`)
 - `--file` (required): path to a trip JSON file (same structure as the `trips` and `line_items` tables below).
 - `--db` (optional): database path. Defaults to `receipts.db`.
-- `--image` (optional): path to the receipt photo, stored with the trip.
+- `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
+- `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
 
 ### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
@@ -84,7 +85,8 @@ CREATE TABLE trips (
   total_c        INTEGER NOT NULL,
   savings_c      INTEGER,
   card_last4     TEXT,
-  receipt_image  TEXT,                -- path to the receipt photo
+  receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.7)
+  trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder; NULL for CSV imports
   needs_review   INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0,1)),
   notes          TEXT,
   UNIQUE (store_id, transaction_no)   -- trips with no transaction_no never conflict here; see 7.1 step 2
@@ -307,6 +309,14 @@ Answers update the `products` row, which fixes every past and future trip that u
 
 The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers, so duplicate detection for those trips uses store, date, and total. Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
 
+### 7.7 Receipt photos and trip files
+- Receipt photos and the trip JSON that Claude writes from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
+- Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
+- The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
+- The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
+- The saved JSON makes every trip reproducible: the database can be rebuilt by loading the files again, and the JSON records exactly what Claude read from the photo.
+- The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
+
 ## 8. Edge Cases & Error Handling
 
 - **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
@@ -317,7 +327,7 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
 - **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
 - **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
-- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt attach to the same trip.
+- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt attach to the same trip (named as in 7.7).
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
 - **Re-running a load or import**: must not crash or double-insert.
 
