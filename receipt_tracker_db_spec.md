@@ -148,7 +148,7 @@ CREATE TABLE line_items (
   is_fsa         INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
   expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
   expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
-  CHECK (paid_c = price_c - discount_c),
+  CHECK (paid_c = price_c - discount_c),   -- the loader computes paid_c, so this never fails a load (7.2)
   UNIQUE (trip_id, line_no)
 );
 
@@ -273,7 +273,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
 ### 7.2 Integrity checks (run on every load)
 - Sum of `paid_c` for all lines plus trip adjustments must equal `subtotal_c` (when the receipt prints one).
 - `subtotal_c + tax_c` must equal `total_c`.
-- Each line must satisfy `paid_c = price_c - discount_c`.
+- The loader computes each line's `paid_c` as `price_c - discount_c`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
 
 ### 7.3 Duplicate-line detection (removed)
