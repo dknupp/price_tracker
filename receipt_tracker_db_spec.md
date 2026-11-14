@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-Submit photographs of grocery trips (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
+Submit photographs of grocery trips (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
 
 Receipt photos can be uploaded from a phone before even leaving the store.
 
