@@ -79,10 +79,10 @@ CREATE TABLE trips (
   trip_date      TEXT NOT NULL,       -- ISO 8601 date
   trip_time      TEXT,
   transaction_no TEXT,                -- used to reject re-uploaded receipts
-  subtotal_c     INTEGER,
-  tax_c          INTEGER,
-  total_c        INTEGER NOT NULL,
-  savings_c      INTEGER,
+  subtotal_cents     INTEGER,
+  tax_cents          INTEGER,
+  total_cents        INTEGER NOT NULL,
+  savings_cents      INTEGER,
   card_last4     TEXT,
   receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.7)
   trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder; NULL for CSV imports
@@ -142,14 +142,14 @@ CREATE TABLE line_items (
   quantity       REAL NOT NULL DEFAULT 1,
   weight         REAL CHECK (weight > 0),   -- for by-weight items, as printed
   weight_unit    TEXT REFERENCES unit_conversions,   -- lb, kg, oz as printed; required when weight is given
-  price_c        INTEGER NOT NULL,    -- before discount
-  discount_c     INTEGER NOT NULL DEFAULT 0,
-  paid_c         INTEGER NOT NULL,
+  price_cents        INTEGER NOT NULL,    -- before discount
+  discount_cents     INTEGER NOT NULL DEFAULT 0,
+  paid_cents         INTEGER NOT NULL,
   is_taxable     INTEGER CHECK (is_taxable IN (0,1)),   -- NULL unknown
   is_fsa         INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
   expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
   expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
-  CHECK (paid_c = price_c - discount_c),   -- the loader computes paid_c, so this never fails a load (7.2)
+  CHECK (paid_cents = price_cents - discount_cents),   -- the loader computes paid_cents, so this never fails a load (7.2)
   CHECK ((weight IS NULL) = (weight_unit IS NULL)),
   UNIQUE (trip_id, line_no)
 );
@@ -158,7 +158,7 @@ CREATE TABLE trip_adjustments (
   adj_id     INTEGER PRIMARY KEY,
   trip_id    INTEGER NOT NULL REFERENCES trips ON DELETE CASCADE,
   kind       TEXT NOT NULL,           -- member savings, For U, $5 off $25, instant savings
-  amount_c   INTEGER NOT NULL
+  amount_cents   INTEGER NOT NULL
 );
 
 CREATE TABLE coupons (
@@ -175,7 +175,7 @@ CREATE TABLE disputes (
   dispute_id  INTEGER PRIMARY KEY,
   line_id     INTEGER NOT NULL REFERENCES line_items,
   reason      TEXT NOT NULL,          -- double charge, wrong price (entered by the user when they notice one)
-  amount_c    INTEGER NOT NULL,
+  amount_cents    INTEGER NOT NULL,
   status      TEXT NOT NULL DEFAULT 'open'
               CHECK (status IN ('open','refunded','denied')),
   opened_on   TEXT NOT NULL,
@@ -196,24 +196,24 @@ CREATE INDEX idx_store_items_prod  ON store_items (product_id);
 CREATE VIEW v_unit_price AS
 SELECT
   l.line_id, t.trip_date, s.chain, p.brand, p.name,
-  l.paid_c,
+  l.paid_cents,
   -- Packaged items: per pack unit (can, roll) and per the product's unit_measure.
   -- By-weight items: no pack unit; the measure is the weight unit the receipt printed.
   CASE
     WHEN p.sold_by_weight = 1 OR p.pack_count IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count)
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count)
   END AS cents_per_pack_unit,
   CASE
-    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_c / l.weight
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_cents / l.weight
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size)
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count * p.unit_size)
   END AS cents_per_measure_unit,
   CASE WHEN p.sold_by_weight = 1 THEN l.weight_unit ELSE p.unit_measure END AS measure_unit,
   CASE WHEN p.sold_by_weight = 1 THEN uw.base_unit  ELSE u.base_unit    END AS base_unit,
   CASE
-    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_c / (l.weight * uw.factor)
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_cents / (l.weight * uw.factor)
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL OR u.factor IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size * u.factor)
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count * p.unit_size * u.factor)
   END AS cents_per_base_unit   -- per g, mL or ct; multiply by 453.592 for per lb, 28.3495 for per oz
   -- Any unknown input (weight, pack count, unit size) makes the result NULL, shown as "?".
 FROM line_items l
@@ -257,14 +257,14 @@ WHERE l.line_type = 'item';
 CREATE VIEW v_markdown AS
 SELECT
   l.line_id, t.trip_date, s.chain, l.raw_text,
-  l.price_c        AS regular_price_c,
-  l.discount_c     AS markdown_c,
-  l.paid_c,
-  ROUND(100.0 * l.discount_c / l.price_c, 1) AS percent_off
+  l.price_cents        AS regular_price_cents,
+  l.discount_cents     AS markdown_cents,
+  l.paid_cents,
+  ROUND(100.0 * l.discount_cents / l.price_cents, 1) AS percent_off
 FROM line_items l
 JOIN trips t  ON t.trip_id = l.trip_id
 JOIN stores s ON s.store_id = t.store_id
-WHERE l.line_type = 'item' AND l.discount_c > 0 AND l.price_c > 0;
+WHERE l.line_type = 'item' AND l.discount_cents > 0 AND l.price_cents > 0;
 ```
 
 This is display only (feature idea 13): no new stored column, since price, discount and amount paid are already separate.
@@ -280,9 +280,9 @@ This is display only (feature idea 13): no new stored column, since price, disco
 6. Print the load summary (section 9).
 
 ### 7.2 Integrity checks (run on every load)
-- Sum of `paid_c` for all lines plus trip adjustments must equal `subtotal_c` (when the receipt prints one).
-- `subtotal_c + tax_c` must equal `total_c`.
-- The loader computes each line's `paid_c` as `price_c - discount_c`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
+- Sum of `paid_cents` for all lines plus trip adjustments must equal `subtotal_cents` (when the receipt prints one).
+- `subtotal_cents + tax_cents` must equal `total_cents`.
+- The loader computes each line's `paid_cents` as `price_cents - discount_cents`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
 
 ### 7.3 Duplicate-line detection (removed)
@@ -327,7 +327,7 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 
 - **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
-- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_c`, not a new line.
+- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line.
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
 - **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments`, not on a line.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
