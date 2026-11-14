@@ -43,6 +43,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--db` (optional): database path. Defaults to `receipts.db`.
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
+- `--force` (optional): load a trip that matches an existing one by store, date, and total when neither has a transaction number (7.1 step 2). It never overrides a matching transaction number.
 
 ### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
@@ -264,7 +265,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
 
 ### 7.1 Loading a trip
 1. Find or create the store (by chain and store number; a missing store number matches a missing one).
-2. If the trip's `(store_id, transaction_no)` already exists, reject it and report "already logged" (the duplicate Aug 11 upload would have been caught this way). If there is no transaction number, warn when a trip with the same store, date, and total already exists.
+2. If the trip's `(store_id, transaction_no)` already exists, reject it and report "already logged" (the duplicate Aug 11 upload would have been caught this way). If there is no transaction number, a trip with the same store, date, and total counts as already logged and is skipped the same way. `--force` loads it anyway, for the rare case of two genuinely identical trips.
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
 4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
