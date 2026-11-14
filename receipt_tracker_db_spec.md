@@ -314,7 +314,8 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 - Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
 - The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
 - The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
-- The saved JSON makes every trip reproducible: the database can be rebuilt by loading the files again, and the JSON records exactly what Claude read from the photo.
+- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.3. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review`, `suspected_duplicate` or `expiration_estimated`).
+- Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
 - The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
 
 ## 8. Edge Cases & Error Handling
