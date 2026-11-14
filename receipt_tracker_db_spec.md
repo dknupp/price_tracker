@@ -299,7 +299,8 @@ Answers update the `products` row, which fixes every past and future trip that u
 
 ### 7.5 FSA handling
 - Lines the receipt marks as FSA are stored with `is_fsa = 1`.
-- A product can also be marked FSA-eligible once, so later receipts flag it automatically.
+- A product can also be marked FSA-eligible once (`products.is_fsa`), so later receipts flag it automatically: at load, a line gets `is_fsa = 1` when the receipt marks it or its product is marked.
+- The FSA report uses only the line's `is_fsa`, so it reflects what each trip actually recorded. Marking a product later does not change past lines; the post-load review (7.4) asks about those.
 - The FSA report lists each FSA line with its share of tax, per trip. For example, the Oct 30, 2026 Costco ibuprofen: $10.99 plus $1.18 tax, $12.17 total.
 
 ### 7.5a Expiration dates
