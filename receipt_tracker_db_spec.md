@@ -10,7 +10,6 @@ Sample questions the database must be able to answer:
 
 - What did I pay per unit (can, roll, ounce, pound) for a product at each store, over time?
 - Which products do I buy most often?
-- Did any receipt charge me for the same item twice?
 - How much did I spend in a month, per store, per category?
 - What FSA-eligible items did I buy, and what is the FSA total including tax?
 - Given a shopping list of items, how could I maximize savings (whether constrained to one store or willing to stop at multiple stores)?
@@ -52,7 +51,6 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--unit-prices <product>`: price per unit over time, by store.
 - `--frequent [N]`: most frequently purchased products.
 - `--fsa [--year YYYY]`: FSA-eligible lines with tax, by trip.
-- `--duplicates`: lines flagged as suspected duplicates.
 
 ## 5. Outputs
 
@@ -148,7 +146,6 @@ CREATE TABLE line_items (
   paid_c         INTEGER NOT NULL,
   is_taxable     INTEGER CHECK (is_taxable IN (0,1)),   -- NULL unknown
   is_fsa         INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
-  suspected_duplicate INTEGER NOT NULL DEFAULT 0 CHECK (suspected_duplicate IN (0,1)),
   expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
   expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
   CHECK (paid_c = price_c - discount_c),
@@ -175,7 +172,7 @@ CREATE TABLE coupons (
 CREATE TABLE disputes (
   dispute_id  INTEGER PRIMARY KEY,
   line_id     INTEGER NOT NULL REFERENCES line_items,
-  reason      TEXT NOT NULL,          -- double charge, wrong price
+  reason      TEXT NOT NULL,          -- double charge, wrong price (entered by the user when they notice one)
   amount_c    INTEGER NOT NULL,
   status      TEXT NOT NULL DEFAULT 'open'
               CHECK (status IN ('open','refunded','denied')),
@@ -279,10 +276,8 @@ This is display only (feature idea 13): no new stored column, since price, disco
 - Each line must satisfy `paid_c = price_c - discount_c`.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
 
-### 7.3 Duplicate-line check (run on every load)
-Within one trip, flag a line as `suspected_duplicate` when another line has the same item code (or same receipt text when no code) and the same price. Flagged lines are listed in the load summary with a prompt to check the quantity. Example: the Kirkland albacore tuna charged twice on Oct 30, 2026 when only one 8-pack was bought.
-
-A flagged line is only a suspicion. The user can confirm it (create a dispute) or clear it (two really were bought).
+### 7.3 Duplicate-line detection (removed)
+v1 does not flag repeated lines: buying several of the same item is common, and a true double charge is rare, so a flag would mostly be noise. A double charge the user notices is recorded in `disputes`. Automatic detection is feature idea 2. (Section number kept so references stay stable.)
 
 ### 7.4 Post-load review prompts
 After a load, the tool lists questions for the user instead of guessing:
@@ -314,7 +309,7 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 - Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
 - The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
 - The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
-- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.3. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review`, `suspected_duplicate` or `expiration_estimated`).
+- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `expiration_estimated`).
 - Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
 - The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
 
@@ -338,7 +333,6 @@ Every load prints:
 - Trip loaded (store, date, total), or "already logged".
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
-- Suspected duplicate lines.
 - Review questions from 7.4.
 - Any coupons recorded and their expiry dates.
 
@@ -346,9 +340,8 @@ Every load prints:
 
 - [ ] Importing the CSV converted from the existing doc produces one trip per dated section of the doc (16 as of Nov 10, 2026) whose line totals match the receipt totals in the doc.
 - [ ] Re-importing the same CSV produces no new rows and no errors.
-- [ ] Loading the Oct 30, 2026 Costco receipt flags the second albacore tuna line as a suspected duplicate.
 - [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
-- [ ] `--unit-prices tuna` shows Trader Joe's at about $1.99 per can and Costco at about $2.37 per can, with the Costco duplicate excluded or marked.
+- [ ] `--unit-prices tuna` shows Trader Joe's at about $1.99 per can and Costco at about $2.37 per can.
 - [ ] A product with no pack size shows "?" in unit-price reports, never a guessed number.
 - [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
@@ -366,6 +359,7 @@ Every load prints:
 - Multi-user support and sign-in.
 - Currency other than US dollars.
 - Automatic submission of FSA claims or store refund requests.
+- Automatic detection of duplicate charges (feature idea 2).
 
 ## 12. Open Questions
 

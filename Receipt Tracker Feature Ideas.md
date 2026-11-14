@@ -16,6 +16,7 @@ Right at checkout, the user photographs the receipt and the tool immediately sca
 
 - **Why:** On the October 30, 2026 Costco trip, the Kirkland Signature albacore tuna was charged twice, but only one 8-pack was bought. Catching that while still in the store means the user can get a refund at the service desk instead of going back later.
 - **Flag same-item repeats:** Highlight lines with the same item code or name appearing more than once, and ask whether the quantity is really right.
+- **Design sketch (removed from the v1 spec):** a `line_items.suspected_duplicate` flag (0/1), set on load when another line in the same trip has the same item code (or the same text when there is no code) and the same price. Flagged lines appear in the load summary, and the user confirms one (creating a `disputes` row) or clears it. It was dropped from v1 because buying several of the same item is common and true double charges are rare. Open issues carried over: some stores print one line per unit, so repeats are normal there; and it's unclear whether to flag both lines or only the later one. A `--duplicates` report listed flagged lines.
 
 ## 3. Shelf price versus receipt price comparison
 
