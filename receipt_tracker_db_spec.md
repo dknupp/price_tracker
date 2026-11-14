@@ -1,7 +1,5 @@
 # Receipt Tracker — Database Specification
 
-Oct 30, 2026
-
 ## 1. Purpose
 
 Submit photographs of grocery trips (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
@@ -15,7 +13,7 @@ Sample questions the database must be able to answer:
 - Did any receipt charge me for the same item twice?
 - How much did I spend in a month, per store, per category?
 - What FSA-eligible items did I buy, and what is the FSA total including tax?
-- Given a shopping list of items, how could I maximize savings (either constrained to one store, or if willing to stop at multiple stores)?
+- Given a shopping list of items, how could I maximize savings (whether constrained to one store or willing to stop at multiple stores)?
 
 ## 2. Background & Design Principles
 
@@ -24,7 +22,7 @@ Sample questions the database must be able to answer:
 - **Receipt text is not the product.** Receipts print abbreviations ("KS ALBACORE", "PE GRANOLA", "TF Sld Chp Thai Chil"). A mapping table connects each store's receipt text and item code to one canonical product, so the same product can be compared across stores.
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
-- **Discounts are kept separate from price.** In addition to the amount paid, the original shelf price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
+- **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
 
 ## 3. Technology
 
