@@ -116,9 +116,11 @@ Add an expiration date column for food items, so each purchase can carry a use-b
 
 - **Capture the printed date:** Record the expiration date read from the package for each food item, either when it's logged or during the post-trip review, since receipts don't print it. This goes in its own "printed expiration" field and stays empty unless someone actually entered it.
 - **Seed an estimate by item type:** Based on what the item is, pre-fill a separate "estimated expiration" date from a typical shelf life, such as a few days for fresh fish and herbs, a couple of weeks for milk, or years for canned goods. The user can confirm or change it. Keeping the estimate in its own field means it is never mistaken for the date printed on the package, and entering a printed date later doesn't erase the estimate.
+- **Example question:** "Which items have I purchased recently that might go bad soon?" Claude would estimate roughly how long each perishable item lasts and fill in the estimate when the trip is loaded.
+- **Open issue from the spec review:** the typical shelf life per item type needs a source, such as a table by category or Claude's own estimate at load time. An estimate stored at load time also goes stale if the item's category is later corrected.
 - **Make it optional:** Many items (household goods, deposits, fees) have no expiration date, so the field should be allowed to stay empty, not guessed.
 - **Connect to other features:** The date could feed the recipe suggestions, so items closest to expiring are used first, and the shopping list, so the tool doesn't suggest buying something that's already stocked and still good.
-- **Database change:** Two new nullable date columns on the line items table, `expiration_printed` and `expiration_estimated`, since the dates belong to a specific purchase, not to the product in general. A view returns the printed date when there is one and falls back to the estimate, and also says which of the two it used. That view is now written into the database spec.
+- **Database change:** Two new nullable date columns on the line items table, `expiration_printed` and `expiration_estimated`, since the dates belong to a specific purchase, not to the product in general. A view returns the printed date when there is one and falls back to the estimate, and also says which of the two it used. That view was drafted in the v1 database spec and then moved back here: this is a v2 feature.
 
 ## 13. Markdown column and regular price tracking
 

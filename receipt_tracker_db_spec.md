@@ -147,8 +147,6 @@ CREATE TABLE line_items (
   paid_cents         INTEGER NOT NULL,
   is_taxable     INTEGER CHECK (is_taxable IN (0,1)),   -- NULL unknown
   is_fsa         INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
-  expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
-  expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
   CHECK (paid_cents = price_cents - discount_cents),   -- the loader computes paid_cents, so this never fails a load (7.2)
   CHECK ((weight IS NULL) = (weight_unit IS NULL)),
   UNIQUE (trip_id, line_no)
@@ -230,27 +228,6 @@ By-weight items compare across stores the same way as packaged ones: grapes boug
 
 Reports display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
-### Derived view: expiration
-
-```sql
-CREATE VIEW v_expiration AS
-SELECT
-  l.line_id, t.trip_date, p.brand, p.name,
-  l.expiration_printed,
-  l.expiration_estimated,
-  COALESCE(l.expiration_printed, l.expiration_estimated) AS expiration_used,
-  CASE
-    WHEN l.expiration_printed IS NOT NULL THEN 'printed'
-    WHEN l.expiration_estimated IS NOT NULL THEN 'estimated'
-    ELSE NULL
-  END AS expiration_source
-FROM line_items l
-JOIN trips t             ON t.trip_id = l.trip_id
-LEFT JOIN store_items si ON si.store_item_id = l.store_item_id
-LEFT JOIN products p     ON p.product_id = si.product_id
-WHERE l.line_type = 'item';
-```
-
 ### Derived view: markdown
 
 ```sql
@@ -303,12 +280,6 @@ Answers update the `products` row, which fixes every past and future trip that u
 - The FSA report uses only the line's `is_fsa`, so it reflects what each trip actually recorded. Marking a product later does not change past lines; the post-load review (7.4) asks about those.
 - The FSA report lists each FSA line with its share of tax, per trip. For example, the Oct 30, 2026 Costco ibuprofen: $10.99 plus $1.18 tax, $12.17 total.
 
-### 7.5a Expiration dates
-- Receipts never print expiration dates, so `expiration_printed` is filled in only when the user enters the date from the package, usually during the post-load review. It is never guessed.
-- `expiration_estimated` is seeded from the product's category using a typical shelf life (for example, a few days for fresh fish and herbs, about two weeks for milk, years for canned goods), counted from the trip date. Non-food lines and categories with no known shelf life leave it NULL.
-- Entering a printed date never overwrites or clears the estimate, so both values stay visible.
-- Reports and recipe suggestions use a view that returns the printed date when present and otherwise the estimate, plus a column saying which one was used ("printed" or "estimated").
-
 ### 7.6 Bulk import of trip history
 `import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing. The column list is defined together with the trip JSON format.
 
@@ -319,7 +290,7 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 - Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
 - The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
 - The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
-- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `expiration_estimated`).
+- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
 - Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
 - The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
 
@@ -359,7 +330,6 @@ Every load prints:
 - [ ] A load that fails partway leaves no partial trip in the database.
 - [ ] No money value is stored as a floating-point number.
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
-- [ ] Entering a printed expiration date on a line leaves its estimated date unchanged, and the expiration view reports the printed date as the one used.
 
 ## 11. Out of Scope (v1)
 
@@ -370,6 +340,7 @@ Every load prints:
 - Currency other than US dollars.
 - Automatic submission of FSA claims or store refund requests.
 - Automatic detection of duplicate charges (feature idea 2).
+- Expiration dates, printed or estimated (feature idea 12; planned for v2).
 
 ## 12. Open Questions
 
