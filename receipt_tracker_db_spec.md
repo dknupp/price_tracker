@@ -298,7 +298,7 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 
 - **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
-- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line.
+- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line. If an item ever has more than one printed discount line, the amounts are summed and `raw_discount_text` keeps every printed line, separated by newlines.
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
 - **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments`, not on a line.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
