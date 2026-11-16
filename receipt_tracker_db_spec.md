@@ -45,7 +45,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
 - `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.9). It can't be combined with `--force`.
-- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip (7.1 step 2). It never overrides a matching transaction number.
+- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
 
 ### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
@@ -257,6 +257,12 @@ This is display only (feature idea 13): no new stored column, since price, disco
    A match is reported as "already logged" with the existing trip's id, and nothing is loaded (the duplicate Aug 11 upload would have been caught by key 1). `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
 
    **Incomplete trips.** A trip whose total hasn't been read yet (`total_cents` NULL, for example the top half of a long receipt) is incomplete and has `needs_review = 1`. If a new trip is at the same store on the same date as an incomplete trip, or is itself incomplete and has the same store and date as any existing trip, the loader stops and reports "possibly part of trip N". The user then completes trip N with `--update N` (7.9), or loads the new one as a separate trip with `--force`.
+
+   **Near matches.** The keys above need exact values, so a second photo of the same receipt can slip past them if Claude reads it slightly differently (a misread digit, a cropped line). After the keys, the loader compares the new trip with every existing trip at the same store on the same date. It is a near match if either:
+   - the totals are equal, or
+   - at least 80% of the lines match, counted against whichever trip has more lines. A line matches when it has the same item code (or text, when there is no code) and the same price, and each existing line can match only once.
+
+   Two trips are never a near match when both print a transaction number and the numbers differ, or both print a time and the times are more than 10 minutes apart. A near match stops the load with "possibly the same receipt as trip N". The user then loads it anyway with `--force`, or uses `--update N` if the new reading is the better one (7.9). `import_history.py` reports near matches as warnings and loads the trip, since the history CSV comes from the user's own record, not a second photo.
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
 4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
@@ -436,7 +442,7 @@ A long receipt can be loaded in parts, in any order. A first part with no total 
 ## 9. Load Summary
 
 Every load prints:
-- Trip loaded or updated (trip id, store, date, total, or "total not read yet" for an incomplete trip), "already logged" with the existing trip's id, or "possibly part of trip N" (7.1 step 2), so it can be updated (7.9).
+- Trip loaded or updated (trip id, store, date, total, or "total not read yet" for an incomplete trip), "already logged" with the existing trip's id, or "possibly part of trip N", or "possibly the same receipt as trip N" (7.1 step 2), so it can be updated (7.9).
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
 - Review questions from 7.4.
@@ -454,6 +460,7 @@ Every load prints:
 - [ ] Loading the Oct 30, 2026 Costco receipt stores the ibuprofen line with `fsa_marked = 1`, the trip with `fsa_total_cents = 1217`, and sets the ibuprofen product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
 - [ ] A load that fails partway leaves no partial trip in the database.
 - [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
+- [ ] A second reading of an already logged receipt with no transaction number, where one line's price was misread and the time was misread by a minute (so key 2 doesn't match), is stopped as "possibly the same receipt as trip N" and loads only with `--force`.
 - [ ] After the top half of a receipt (no total) is loaded, loading the bottom half as a new trip is stopped as "possibly part of trip N", and `--update N` with the combined JSON completes the trip.
 - [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
@@ -501,10 +508,10 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 - **Discussion.** [PR thread on the paid-amount CHECK](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
 
 ### 13.3 Possible duplicate trips are skipped, and `--force` is the override
-- **Decision.** A trip that matches one already logged is skipped as "already logged", not loaded with a warning. The match uses the first key the receipt supports: transaction number; then store, date and time; then store, date and total plus the same lines (7.1 step 2). `--force` loads a trip anyway when the match was on the second or third key, never on a transaction number. A trip with no total yet is incomplete, and a new trip that may be part of it is stopped so it can be added with `--update`.
+- **Decision.** A trip that matches one already logged is skipped as "already logged", not loaded with a warning. The match uses the first key the receipt supports: transaction number; then store, date and time; then store, date and total plus the same lines (7.1 step 2). `--force` loads a trip anyway when the match was on the second or third key, never on a transaction number. A trip with no total yet is incomplete, and a new trip that may be part of it is stopped so it can be added with `--update`. A near match (same store and date, and equal totals or at least 80% of lines matching) is stopped with a question rather than skipped, since it is probably, but not certainly, the same receipt read differently.
 - **Why.** Loading a duplicate double-counts spending and purchases, which is worse than occasionally asking the user to confirm a genuine repeat trip. A transaction number is unique, so a match on it is never overridden. The weaker keys can match two genuinely separate trips, so they need an override. Store, date and total alone was too weak: a misread total misses a real duplicate, and two small trips with the same total match by accident.
 - **Alternatives considered.** Warning and loading anyway (the original draft), rejected because duplicates would silently skew every total. Total as the only fallback key, rejected as above. A hash of the photo file, rejected because a second photo of the same receipt has a different hash.
-- **Consequences.** Re-running a load or import is safe and adds nothing. `import_history.py` has no `--force`. The history CSV relies on the third key, since the doc it comes from has no transaction numbers or times. A long receipt can be loaded in parts, in any order.
+- **Consequences.** Re-running a load or import is safe and adds nothing. `import_history.py` has no `--force`, and reports near matches as warnings instead of stopping. The history CSV relies on the third key, since the doc it comes from has no transaction numbers or times. A long receipt can be loaded in parts, in any order.
 - **Discussion.** [PR thread on duplicates without a transaction number](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818910), [PR thread on updating a trip](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818958).
 
 ### 13.4 Weighed items are converted to base units using the unit printed on the receipt
