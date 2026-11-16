@@ -281,7 +281,16 @@ Answers update the `products` row, which fixes every past and future trip that u
 - The FSA report lists each FSA line with its share of tax, per trip. For example, the Oct 30, 2026 Costco ibuprofen: $10.99 plus $1.18 tax, $12.17 total.
 
 ### 7.6 Bulk import of trip history
-`import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing. The column list is defined together with the trip JSON format.
+`import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing.
+
+The columns are the trip JSON fields (7.8), flattened. Money is in integer cents, as in the JSON.
+- **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `card_last4`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `notes`.
+- **`row_type`**: `line` or `adjustment`.
+- **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`, `fsa_mark`.
+- **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents`.
+- **Product columns**, on `line` rows: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`. These come from the user's own doc, so they are taken as confirmed rather than listed in the post-load review. A blank cell means unknown.
+
+Rows of one trip are grouped by store, date and transaction number (or store, date and total when there is none). Coupons are not imported.
 
 The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers, so duplicate detection for those trips uses store, date, and total. Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
 
