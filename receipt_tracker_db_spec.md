@@ -43,6 +43,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--db` (optional): database path. Defaults to `receipts.db`.
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
+- `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.9). It can't be combined with `--force`.
 - `--force` (optional): load a trip that matches an existing one by store, date, and total when neither has a transaction number (7.1 step 2). It never overrides a matching transaction number.
 
 ### Bulk import (`import_history.py`)
@@ -395,6 +396,21 @@ Example (values invented):
 }
 ```
 
+### 7.9 Updating a trip
+An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a receipt too long for one photo, where a missing part is photographed later; a cut-off or blurry photo that is retaken; or a price Claude misread.
+
+1. Claude writes a complete trip JSON (7.8) for the whole receipt as now read: every line from every photo, not just the new ones.
+2. `load_trip.py --file trip.json --update <trip_id> [--image photo.jpg ...]` replaces the trip in one transaction. The trip's fields are overwritten, and its lines and adjustments are deleted and loaded again from the file as in 7.1 step 4. The trip keeps its `trip_id`. If anything fails, the trip is left exactly as it was.
+3. The integrity checks (7.2) run again, and `needs_review` is set from this load alone, as for a new trip.
+4. Rows that point into the trip are kept:
+   - Each dispute is re-linked to the new line with the same `line_no`. If that line number no longer exists, the update is refused and nothing changes.
+   - Coupons the trip printed are kept, including any `used_trip_id`. Coupons in the file that aren't recorded yet (matched by description) are added.
+   - Product details and `store_items` mappings are reused, not reset. An update corrects what the receipt printed; product corrections still go to `products` (7.4).
+5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new transaction number, or store, date and total, matches a different trip.
+6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
+
+A trip can't be loaded before its total is read, because `total_cents` is required and is used to detect duplicates. For a long receipt, the part with the total must be in the first load.
+
 ## 8. Edge Cases & Error Handling
 
 - **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
@@ -405,14 +421,14 @@ Example (values invented):
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
 - **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
 - **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
-- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt attach to the same trip (named as in 7.7).
+- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt are added by updating the trip (7.9), and are named as in 7.7.
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
 - **Re-running a load or import**: must not crash or double-insert.
 
 ## 9. Load Summary
 
 Every load prints:
-- Trip loaded (store, date, total), or "already logged".
+- Trip loaded or updated (trip id, store, date, total), or "already logged" with the existing trip's id, so it can be updated (7.9).
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
 - Review questions from 7.4.
@@ -429,6 +445,7 @@ Every load prints:
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
 - [ ] Loading the Oct 30, 2026 Costco receipt stores the ibuprofen line with `fsa_marked = 1`, the trip with `fsa_total_cents = 1217`, and sets the ibuprofen product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
 - [ ] A load that fails partway leaves no partial trip in the database.
+- [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
 

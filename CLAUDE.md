@@ -13,7 +13,7 @@ Receipt Tracker is a tool for logging grocery receipts (one receipt = one trip) 
 
 Python 3, standard library only: `sqlite3`, `argparse`, `csv`, `json`. **Add no third-party dependencies.** The schema is plain SQL so it can port to PostgreSQL later, so avoid SQLite-only features where a portable form exists.
 
-- `load_trip.py --file trip.json [--db receipts.db] [--image photo.jpg ...] [--receipts-dir DIR]` loads one trip from JSON shaped like the `trips` and `line_items` tables. It copies the photos and the JSON into the receipts folder (spec 7.7), which is never committed to git.
+- `load_trip.py --file trip.json [--db receipts.db] [--image photo.jpg ...] [--receipts-dir DIR] [--update TRIP_ID | --force]` loads one trip from JSON in the format of spec 7.8, or replaces an existing trip with `--update` (spec 7.9). It copies the photos and the JSON into the receipts folder (spec 7.7), which is never committed to git.
 - `import_history.py --history trips.csv` bulk-loads many trips from a CSV (one row per line item). It seeds the database from the existing "Grocery Price Tracker" doc after a one-time conversion of that doc to CSV.
 - There is no report program. Claude answers questions with SQL against the database, using the views (`v_unit_price`, `v_markdown`) for logic that is easy to get wrong.
 
