@@ -225,6 +225,8 @@ By-weight items compare across stores the same way as packaged ones: grapes boug
 
 Answers display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
+Lines whose product isn't identified yet (`store_items.product_id` NULL) are left out of the view, since they have no product to compare against. Their trips already have `needs_review = 1`, and the lines appear in the view once they are identified, with no reload. When Claude answers a unit-price question, it says how many such lines exist, so an answer never looks more complete than it is.
+
 ### Derived view: markdown
 
 ```sql
