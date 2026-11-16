@@ -28,7 +28,7 @@ These come from past errors on the project and are checked by the acceptance cri
 - **`line_items.raw_text` is never edited.** Corrections go to `products`, and a product fix applies to every past trip automatically.
 - **Unit prices are derived** in `v_unit_price`, never stored. Compare only rows that share a `base_unit` (g, mL or ct). Weight oz and fl oz are separate units.
 - **Keep price, discount and paid separate**, with `paid_cents = price_cents - discount_cents`. Separately printed discount lines (such as Costco's `/1901580 -3.00`) fold into the item's `discount_cents`. Trip-level promotions go in `trip_adjustments` as negative cents. `trips.savings_cents` is stored as printed and never used in checks.
-- **Loads are all-or-nothing and idempotent.** A trip and its lines go in one transaction. A re-run must not crash or double-insert. Duplicate trips are detected by `(store_id, transaction_no)`, or by store, date and total when there is no transaction number.
+- **Loads are all-or-nothing and idempotent.** A trip and its lines go in one transaction. A re-run must not crash or double-insert. Duplicate trips are detected by the first key the receipt supports: `(store_id, transaction_no)`; store, date and time; or store, date, total and the same lines (spec 7.1 step 2). A trip with no total yet is incomplete, and a new trip that may be part of one is stopped until it is added with `--update`.
 - **Integrity-check failures don't abort the load.** They set `needs_review = 1` and print the exact mismatch in dollars.
 
 ## Data model in brief

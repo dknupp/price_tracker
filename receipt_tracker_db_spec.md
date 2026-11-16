@@ -44,7 +44,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
 - `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.9). It can't be combined with `--force`.
-- `--force` (optional): load a trip that matches an existing one by store, date, and total when neither has a transaction number (7.1 step 2). It never overrides a matching transaction number.
+- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip (7.1 step 2). It never overrides a matching transaction number.
 
 ### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
@@ -74,10 +74,10 @@ CREATE TABLE trips (
   store_id       INTEGER NOT NULL REFERENCES stores,
   trip_date      TEXT NOT NULL,       -- ISO 8601 date
   trip_time      TEXT,
-  transaction_no TEXT,                -- used to reject re-uploaded receipts
+  transaction_no TEXT,                -- first key for detecting re-uploaded receipts (7.1 step 2)
   subtotal_cents     INTEGER,
   tax_cents          INTEGER,
-  total_cents        INTEGER NOT NULL,
+  total_cents        INTEGER,            -- NULL until the part of the receipt with the total is read (incomplete trip, 7.1 step 2)
   savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
   fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
   card_last4     TEXT,
@@ -249,7 +249,14 @@ This is display only (feature idea 13): no new stored column, since price, disco
 
 ### 7.1 Loading a trip
 1. Find or create the store (by chain and store number; a missing store number matches a missing one).
-2. If the trip's `(store_id, transaction_no)` already exists, reject it and report "already logged" (the duplicate Aug 11 upload would have been caught this way). If there is no transaction number, a trip with the same store, date, and total counts as already logged and is skipped the same way. `--force` loads it anyway, for the rare case of two genuinely identical trips.
+2. Check whether the trip is already logged, using the first key the receipt supports:
+   1. `(store_id, transaction_no)`, when a transaction number is printed.
+   2. Store, date and time, when there is no transaction number but a time is printed.
+   3. Store, date and total, plus the same lines (the ordered list of item code, or text when there is no code, with price), when neither is printed. This is mainly the history CSV (7.6).
+
+   A match is reported as "already logged" with the existing trip's id, and nothing is loaded (the duplicate Aug 11 upload would have been caught by key 1). `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
+
+   **Incomplete trips.** A trip whose total hasn't been read yet (`total_cents` NULL, for example the top half of a long receipt) is incomplete and has `needs_review = 1`. If a new trip is at the same store on the same date as an incomplete trip, or is itself incomplete and has the same store and date as any existing trip, the loader stops and reports "possibly part of trip N". The user then completes trip N with `--update N` (7.9), or loads the new one as a separate trip with `--force`.
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
 4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
@@ -258,7 +265,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
 ### 7.2 Integrity checks (run on every load)
 - Sum of `paid_cents` for all lines plus trip adjustments must equal `subtotal_cents` (when the receipt prints one). Adjustments are negative, so adding them subtracts the promotion.
 - `savings_cents` is not part of any check. It repeats savings already counted in each line's `discount_cents` or in the adjustments, so using it as well would count them twice.
-- `subtotal_cents + tax_cents` must equal `total_cents`.
+- `subtotal_cents + tax_cents` must equal `total_cents` (once the total has been read).
 - The loader computes each line's `paid_cents` as `price_cents - discount_cents`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
 
@@ -291,11 +298,11 @@ The columns are the trip JSON fields (7.8), flattened. Money is in integer cents
 
 Rows of one trip are grouped by store, date and transaction number (or store, date and total when there is none). Coupons are not imported.
 
-The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers, so duplicate detection for those trips uses store, date, and total. Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
+The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers or times, so duplicate detection for those trips uses key 3 of 7.1 step 2 (store, date, total and lines). Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
 
 ### 7.7 Receipt photos and trip files
 - Receipt photos and the trip JSON that Claude writes from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
-- Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
+- Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`), and without either, the trip id (`..._costco_t57`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
 - The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
 - The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
 - The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
@@ -323,7 +330,7 @@ Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD`
 |---|---|---|
 | `store.chain`, `store.branch`, `store.store_number`, `store.address` | `chain` only | `stores` (found or created as in 7.1 step 1) |
 | `trip_date`, `trip_time`, `transaction_no`, `card_last4` | `trip_date` only | `trips` |
-| `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | `total_cents` only | `trips` |
+| `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | no | `trips`. A missing `total_cents` makes the trip incomplete (7.1 step 2). |
 | `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
 | `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` (negative). Trip-level promotions only. |
 | `coupons` | no | `coupons`: `description`, `valid_from`, `valid_to` |
@@ -408,10 +415,10 @@ An update replaces a loaded trip with a corrected or more complete reading of th
    - Each dispute is re-linked to the new line with the same `line_no`. If that line number no longer exists, the update is refused and nothing changes.
    - Coupons the trip printed are kept, including any `used_trip_id`. Coupons in the file that aren't recorded yet (matched by description) are added.
    - Product details and `store_items` mappings are reused, not reset. An update corrects what the receipt printed; product corrections still go to `products` (7.4).
-5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new transaction number, or store, date and total, matches a different trip.
+5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
 6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
 
-A trip can't be loaded before its total is read, because `total_cents` is required and is used to detect duplicates. For a long receipt, the part with the total must be in the first load.
+A long receipt can be loaded in parts, in any order. A first part with no total loads as an incomplete trip (7.1 step 2). Each later part is stopped as "possibly part of trip N", and Claude then writes the combined JSON and runs `--update N`.
 
 ## 8. Edge Cases & Error Handling
 
@@ -430,7 +437,7 @@ A trip can't be loaded before its total is read, because `total_cents` is requir
 ## 9. Load Summary
 
 Every load prints:
-- Trip loaded or updated (trip id, store, date, total), or "already logged" with the existing trip's id, so it can be updated (7.9).
+- Trip loaded or updated (trip id, store, date, total, or "total not read yet" for an incomplete trip), "already logged" with the existing trip's id, or "possibly part of trip N" (7.1 step 2), so it can be updated (7.9).
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
 - Review questions from 7.4.
@@ -447,6 +454,8 @@ Every load prints:
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
 - [ ] Loading the Oct 30, 2026 Costco receipt stores the ibuprofen line with `fsa_marked = 1`, the trip with `fsa_total_cents = 1217`, and sets the ibuprofen product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
 - [ ] A load that fails partway leaves no partial trip in the database.
+- [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
+- [ ] After the top half of a receipt (no total) is loaded, loading the bottom half as a new trip is stopped as "possibly part of trip N", and `--update N` with the combined JSON completes the trip.
 - [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
