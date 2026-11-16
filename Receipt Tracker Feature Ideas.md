@@ -33,6 +33,8 @@ Whenever a receipt is logged, the tool always flags any FSA-eligible items, so n
 - **Flag on every receipt:** Mark FSA-eligible lines automatically, using the receipt's own markers where they exist (for example, the Costco receipt on October 30, 2026 listed the Kirkland Signature ibuprofen as FSA-eligible, with a separate FSA total of $12.17 including tax).
 - **Ask about likely candidates:** If a receipt doesn't mark FSA items but a line looks like one (medicine, first aid, sunscreen, and similar), ask the user whether it should be flagged.
 - **Show an FSA total per trip:** Add the FSA-eligible amount, with tax, to each trip's footer so it's easy to claim.
+- **Already in v1 (recorded only):** `line_items.fsa_marked` (the receipt's per-line mark), `trips.fsa_total_cents` (a printed FSA total) and `products.is_fsa` (NULL unknown, 1 once any receipt marks the product, 0 only when the user says so). Nothing in v1 reads them.
+- **Still to design:** a report or computed FSA total, and asking about unmarked items that look eligible. The hard part is each line's share of tax. Approach discussed: store no tax rate (receipts print the amount, not the rate, and one trip can have more than one rate); split the printed `tax_cents` across taxable lines in proportion to the amount paid, with rounding that makes the shares add up exactly. A trip with any line of unknown taxability can't be split, and receipts that print two tax lines aren't handled. A printed `fsa_total_cents`, when present, is the check for any computed total.
 
 ## 5. Shopping list price optimizer
 
