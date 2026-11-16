@@ -21,6 +21,7 @@ Sample questions the database must be able to answer:
 - **Receipt text is not the product.** Receipts print abbreviations ("KS ALBACORE", "PE GRANOLA", "TF Sld Chp Thai Chil"). A mapping table connects each store's receipt text and item code to one canonical product, so the same product can be compared across stores.
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
+- **Everything the receipt prints is recorded.** A printed value is stored even when v1 doesn't use it yet (for example, a line's FSA mark), because it can't be recovered later without the photo. Values the receipt doesn't print are never filled in.
 - **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
 
 ## 3. Technology
