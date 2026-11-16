@@ -418,7 +418,7 @@ An update replaces a loaded trip with a corrected or more complete reading of th
 5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
 6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
 
-A long receipt can be loaded in parts, in any order. A first part with no total loads as an incomplete trip (7.1 step 2). Each later part is stopped as "possibly part of trip N", and Claude then writes the combined JSON and runs `--update N`.
+A long receipt can be loaded in parts, in any order. A first part with no total loads as an incomplete trip (7.1 step 2). Each later part is stopped as "possibly part of trip N", and Claude then writes the combined JSON and runs `--update N`. The date is still required: a part with no printed date (Costco prints it at the bottom) can't be loaded on its own, and Claude waits for the part with the date rather than assume the upload date.
 
 ## 8. Edge Cases & Error Handling
 
