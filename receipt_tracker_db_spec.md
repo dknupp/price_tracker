@@ -81,7 +81,7 @@ CREATE TABLE trips (
   subtotal_cents     INTEGER,
   tax_cents          INTEGER,
   total_cents        INTEGER NOT NULL,
-  savings_cents      INTEGER,
+  savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
   fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
   card_last4     TEXT,
   receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.7)
@@ -155,8 +155,8 @@ CREATE TABLE line_items (
 CREATE TABLE trip_adjustments (
   adj_id     INTEGER PRIMARY KEY,
   trip_id    INTEGER NOT NULL REFERENCES trips ON DELETE CASCADE,
-  kind       TEXT NOT NULL,           -- member savings, For U, $5 off $25, instant savings
-  amount_cents   INTEGER NOT NULL
+  kind       TEXT NOT NULL,           -- trip-level promotions only, such as $5 off $25
+  amount_cents   INTEGER NOT NULL CHECK (amount_cents < 0)   -- money off the trip, so always negative
 );
 
 CREATE TABLE coupons (
@@ -257,7 +257,8 @@ This is display only (feature idea 13): no new stored column, since price, disco
 6. Print the load summary (section 9).
 
 ### 7.2 Integrity checks (run on every load)
-- Sum of `paid_cents` for all lines plus trip adjustments must equal `subtotal_cents` (when the receipt prints one).
+- Sum of `paid_cents` for all lines plus trip adjustments must equal `subtotal_cents` (when the receipt prints one). Adjustments are negative, so adding them subtracts the promotion.
+- `savings_cents` is not part of any check. It repeats savings already counted in each line's `discount_cents` or in the adjustments, so using it as well would count them twice.
 - `subtotal_cents + tax_cents` must equal `total_cents`.
 - The loader computes each line's `paid_cents` as `price_cents - discount_cents`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
@@ -286,7 +287,7 @@ The columns are the trip JSON fields (7.8), flattened. Money is in integer cents
 - **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `card_last4`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents`, `notes`.
 - **`row_type`**: `line` or `adjustment`.
 - **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`, `fsa_mark`.
-- **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents`.
+- **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents` (negative).
 - **Product columns**, on `line` rows: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`. These come from the user's own doc, so they are taken as confirmed rather than listed in the post-load review. A blank cell means unknown.
 
 Rows of one trip are grouped by store, date and transaction number (or store, date and total when there is none). Coupons are not imported.
@@ -325,7 +326,7 @@ Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD`
 | `trip_date`, `trip_time`, `transaction_no`, `card_last4` | `trip_date` only | `trips` |
 | `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | `total_cents` only | `trips` |
 | `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
-| `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` |
+| `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` (negative). Trip-level promotions only. |
 | `coupons` | no | `coupons`: `description`, `valid_from`, `valid_to` |
 | `unreadable` | no | Short notes on parts of the photo that can't be read. Any entry sets `needs_review = 1` and is copied into `trips.notes` (section 8). |
 
@@ -404,7 +405,7 @@ Example (values invented):
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
 - **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line. If an item ever has more than one printed discount line, the amounts are summed and `raw_discount_text` keeps every printed line, separated by newlines.
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
-- **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments`, not on a line.
+- **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments` as a negative amount (-500), not on a line. Savings printed against an item, such as member prices or Costco instant savings, fold into that line's `discount_cents` instead and never go in `trip_adjustments`.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
 - **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
 - **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
