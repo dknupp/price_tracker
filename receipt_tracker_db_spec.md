@@ -479,3 +479,44 @@ Every load prints:
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
 - At stores with no item codes, how should two different products that print identical receipt text be told apart?
+
+## 13. Design Decisions
+
+Short records of decisions whose reasons aren't obvious from the spec itself, in the style of architecture decision records. Each one gives the decision, why it was made, what else was considered, and a link to the discussion. Add a new entry when a design decision changes, rather than rewriting an old one.
+
+PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2), the review of this spec (November 2026).
+
+### 13.1 Money is stored as integer cents, in `_cents` columns
+- **Decision.** Every money value is an `INTEGER` number of cents, in a column whose name ends in `_cents` (`price_cents`, `total_cents`).
+- **Why.** Floating-point numbers can't hold most decimal amounts exactly, so sums drift by fractions of a cent and integrity checks such as "lines add up to the subtotal" fail on correct receipts. Integers add exactly. The suffix makes the unit visible wherever the column is used, so a value in cents is never mistaken for dollars.
+- **Alternatives considered.** `REAL` dollars, rejected for rounding. `NUMERIC`/`DECIMAL`, rejected because SQLite has no true decimal type and would store such values as floating point anyway. The shorter suffix `_c`, used in early drafts and renamed because it isn't a recognized convention and is easy to misread.
+- **Consequences.** Conversion to dollars happens only for display. Division (unit prices) produces fractional cents in views, which is fine because nothing derived is stored.
+- **Discussion.** [PR thread on the paid-amount CHECK and the rename](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
+
+### 13.2 The loader computes `paid_cents`; it is never taken from the input
+- **Decision.** Each line's `paid_cents` is computed by the loader as `price_cents - discount_cents`. The input never supplies it. If the receipt prints a paid amount for the line, it is compared with the computed value, and a mismatch flags the trip (7.2).
+- **Why.** The schema keeps `CHECK (paid_cents = price_cents - discount_cents)`. If the paid amount came from the input, a single misread number would make the `INSERT` fail and abort the whole load, contradicting the rule that integrity failures flag a trip rather than abort it. Computing the value means the check can never fail a load, and it stays as a safety net against bugs.
+- **Alternatives considered.** Taking the printed paid amount and letting the `CHECK` reject bad lines, rejected because it loses the whole trip. Dropping the column and computing it only in views, rejected because nearly every query uses the paid amount, and a stored, checked column keeps those queries simple.
+- **Consequences.** The trip JSON has `printed_paid_cents` (used only for the comparison), not `paid_cents` (7.8).
+- **Discussion.** [PR thread on the paid-amount CHECK](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
+
+### 13.3 Possible duplicate trips are skipped, and `--force` is the override
+- **Decision.** A trip that matches one already logged is skipped as "already logged", not loaded with a warning. The match uses the first key the receipt supports: transaction number; then store, date and time; then store, date and total plus the same lines (7.1 step 2). `--force` loads a trip anyway when the match was on the second or third key, never on a transaction number. A trip with no total yet is incomplete, and a new trip that may be part of it is stopped so it can be added with `--update`.
+- **Why.** Loading a duplicate double-counts spending and purchases, which is worse than occasionally asking the user to confirm a genuine repeat trip. A transaction number is unique, so a match on it is never overridden. The weaker keys can match two genuinely separate trips, so they need an override. Store, date and total alone was too weak: a misread total misses a real duplicate, and two small trips with the same total match by accident.
+- **Alternatives considered.** Warning and loading anyway (the original draft), rejected because duplicates would silently skew every total. Total as the only fallback key, rejected as above. A hash of the photo file, rejected because a second photo of the same receipt has a different hash.
+- **Consequences.** Re-running a load or import is safe and adds nothing. `import_history.py` has no `--force`. The history CSV relies on the third key, since the doc it comes from has no transaction numbers or times. A long receipt can be loaded in parts, in any order.
+- **Discussion.** [PR thread on duplicates without a transaction number](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818910), [PR thread on updating a trip](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818958).
+
+### 13.4 Weighed items are converted to base units using the unit printed on the receipt
+- **Decision.** A by-weight line stores its weight and the unit the receipt printed (`weight`, `weight_unit`). `weight_unit` references `unit_conversions`, and `v_unit_price` converts the line to cents per base unit (g, mL or ct) with that unit's factor. Lines are compared only when they share a base unit, and weight ounces and fluid ounces are separate units.
+- **Why.** Stores print weights in different units (lb at one store, kg at another). Dividing the price by the raw number gives cents per pound for one and cents per kilogram for the other, so they can't be compared. Converting through the printed unit puts both in cents per gram: 2.5 lb of grapes for $4.98 and 1.2 kg for $5.28 come out at 0.439¢ and 0.440¢ per gram.
+- **Alternatives considered.** Assuming every weight is in pounds, rejected because kg receipts would come out wrong by a factor of 2.2. Converting to grams at load and storing only that, rejected because it replaces what the receipt printed, and the spec keeps printed values and derives the rest.
+- **Consequences.** The view exposes `measure_unit` so `cents_per_measure_unit` says what it is per. A weight is always stored with its unit (`CHECK`), and a by-weight line with no printed weight shows "?" in every unit-price column.
+- **Discussion.** [PR thread on by-weight unit prices](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818921).
+
+### 13.5 Receipt photos and trip JSON live in a receipts folder outside git, and that folder is not a backup
+- **Decision.** The loader copies each receipt photo and the trip JSON Claude wrote from it into a receipts folder: a configurable root, for example in iCloud Drive, grouped by year with names such as `2026/2026-10-30_costco_<txn>.jpg` (7.7). The database stores paths relative to that folder. The folder is never committed to git. Keeping the JSON lets a trip be checked against its photo and loaded again after a loader fix, but it is not a full backup: `receipts.db` must be backed up too.
+- **Why.** Every trip must be traceable to its receipt photo, so the photos need a stable home. Relative paths let the folder move or sync without changing rows. Receipts show card digits and where the user shops, so they stay out of the repository. Answers from the post-load review (brands, pack sizes, which product a receipt line is) are stored only in `products` and `store_items`, so the JSON files alone can't rebuild the database.
+- **Alternatives considered.** Storing photos in the database as BLOBs, rejected because it bloats the file and makes photos hard to open. Keeping them in the repository, rejected for privacy. Treating the JSON as temporary, rejected because it is the only exact record of what Claude read.
+- **Consequences.** Files are copied, never moved, and a failed or rejected load copies nothing. The JSON holds no database ids and no loader-computed values. An update (7.9) replaces the trip's JSON and adds new photos with a suffix.
+- **Discussion.** [PR thread on where photos are saved](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4565734859), [PR thread on the trip JSON](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818933).
