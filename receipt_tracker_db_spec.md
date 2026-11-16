@@ -11,7 +11,6 @@ Sample questions the database must be able to answer:
 - What did I pay per unit (can, roll, ounce, pound) for a product at each store, over time?
 - Which products do I buy most often?
 - How much did I spend in a month, per store, per category?
-- What FSA-eligible items did I buy, and what is the FSA total including tax?
 - Given a shopping list of items, how could I maximize savings (whether constrained to one store or willing to stop at multiple stores)?
 
 ## 2. Background & Design Principles
@@ -51,7 +50,6 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 ### Reports (`report.py`)
 - `--unit-prices <product>`: price per unit over time, by store.
 - `--frequent [N]`: most frequently purchased products.
-- `--fsa [--year YYYY]`: FSA-eligible lines with tax, by trip.
 
 ## 5. Outputs
 
@@ -110,7 +108,6 @@ CREATE TABLE products (
   unit_size     REAL,                 -- 15, 17, 16; NULL if unknown
   unit_measure  TEXT REFERENCES unit_conversions,  -- oz, fl oz, g, kg, lb, mL, L, ct, dozen; NULL if unknown
   sold_by_weight INTEGER NOT NULL DEFAULT 0 CHECK (sold_by_weight IN (0,1)),
-  is_fsa        INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
   is_organic    INTEGER CHECK (is_organic IN (0,1))   -- 1 organic, 0 not organic, NULL unknown (never guessed)
 );
 CREATE UNIQUE INDEX ux_products ON products (
@@ -146,7 +143,6 @@ CREATE TABLE line_items (
   discount_cents     INTEGER NOT NULL DEFAULT 0,
   paid_cents         INTEGER NOT NULL,
   is_taxable     INTEGER CHECK (is_taxable IN (0,1)),   -- NULL unknown
-  is_fsa         INTEGER NOT NULL DEFAULT 0 CHECK (is_fsa IN (0,1)),
   CHECK (paid_cents = price_cents - discount_cents),   -- the loader computes paid_cents, so this never fails a load (7.2)
   CHECK ((weight IS NULL) = (weight_unit IS NULL)),
   UNIQUE (trip_id, line_no)
@@ -270,15 +266,11 @@ After a load, the tool lists questions for the user instead of guessing:
 - Products with no brand and no obvious brand in the receipt text (for example "Chili with beans" or "Canned chicken").
 - Products with no pack size or unit size, especially Costco items, since Costco prints no pack sizes.
 - Abbreviations the tool expanded on its own (for example "PE" to Purely Elizabeth), for confirmation.
-- Items that look FSA-eligible but weren't marked as FSA on the receipt.
 
 Answers update the `products` row, which fixes every past and future trip that uses it.
 
-### 7.5 FSA handling
-- Lines the receipt marks as FSA are stored with `is_fsa = 1`.
-- A product can also be marked FSA-eligible once (`products.is_fsa`), so later receipts flag it automatically: at load, a line gets `is_fsa = 1` when the receipt marks it or its product is marked.
-- The FSA report uses only the line's `is_fsa`, so it reflects what each trip actually recorded. Marking a product later does not change past lines; the post-load review (7.4) asks about those.
-- The FSA report lists each FSA line with its share of tax, per trip. For example, the Oct 30, 2026 Costco ibuprofen: $10.99 plus $1.18 tax, $12.17 total.
+### 7.5 FSA handling (removed)
+v1 does not track FSA-eligible items. Getting an FSA total right needs each item's share of a receipt's tax, plus rules for receipts that do and don't mark FSA items, so it is left for its own design (feature idea 4). (Section number kept so references stay stable.)
 
 ### 7.6 Bulk import of trip history
 `import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing.
@@ -286,7 +278,7 @@ Answers update the `products` row, which fixes every past and future trip that u
 The columns are the trip JSON fields (7.8), flattened. Money is in integer cents, as in the JSON.
 - **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `card_last4`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `notes`.
 - **`row_type`**: `line` or `adjustment`.
-- **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`, `fsa_mark`.
+- **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`.
 - **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents`.
 - **Product columns**, on `line` rows: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`. These come from the user's own doc, so they are taken as confirmed rather than listed in the post-load review. A blank cell means unknown.
 
@@ -344,7 +336,6 @@ Each entry in `receipt.lines`:
 | `discount_cents`, `raw_discount_text` | no | Printed discount lines folded into this item (section 8); default 0 and `null` |
 | `printed_paid_cents` | no | Not stored. Only when the receipt prints a paid amount for the line; the loader compares it with its own `paid_cents` (7.2). |
 | `taxable_mark` | no | `is_taxable`: `true`/`false` from the receipt's tax mark, `null` when the receipt shows no marks |
-| `fsa_mark` | no | Sets `is_fsa` (7.5); default `false` |
 
 **`interpretation`**
 
@@ -377,7 +368,7 @@ Example (values invented):
       { "line_no": 1, "item_code": "1159374", "raw_text": "KS ALBACORE", "price_cents": 1899,
         "discount_cents": 300, "raw_discount_text": "/1159374 -3.00", "taxable_mark": false },
       { "line_no": 2, "item_code": "1287620", "raw_text": "KS IBUPROFEN", "price_cents": 1099,
-        "taxable_mark": true, "fsa_mark": true }
+        "taxable_mark": true }
     ],
     "coupons": [
       { "description": "$5 off $25, excludes alcohol", "valid_from": "2026-11-01", "valid_to": "2026-11-30" }
@@ -430,7 +421,6 @@ Every load prints:
 - [ ] A product with no pack size shows "?" in unit-price reports, never a guessed number.
 - [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
-- [ ] The FSA report shows the Costco ibuprofen with tax at $12.17.
 - [ ] A load that fails partway leaves no partial trip in the database.
 - [ ] No money value is stored as a floating-point number.
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
@@ -442,7 +432,8 @@ Every load prints:
 - A phone or web interface of the tool's own. Receipt photos are sent through a Claude conversation, which works from a phone.
 - Multi-user support and sign-in.
 - Currency other than US dollars.
-- Automatic submission of FSA claims or store refund requests.
+- FSA-eligible items and FSA totals (feature idea 4).
+- Automatic submission of store refund requests.
 - Automatic detection of duplicate charges (feature idea 2).
 - Expiration dates, printed or estimated (feature idea 12; planned for v2).
 
