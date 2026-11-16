@@ -24,6 +24,7 @@ No build, lint or test tooling exists yet. The acceptance criteria in spec secti
 These come from past errors on the project and are checked by the acceptance criteria:
 
 - **Money is integer cents** (`*_cents` columns). Never store a float money value.
+- **Store no identifiers for people or accounts.** No card digits, approval codes, member or loyalty numbers, phone numbers, names or prescription numbers in the database or the trip JSON (spec 13.6), even though the receipt prints them.
 - **Never guess.** An unknown pack size, weight, brand or organic status is stored as NULL and shown as "?" (not yet known). Ask the user in the post-load review (spec 7.4) instead of filling in a value.
 - **`line_items.raw_text` is never edited.** Corrections go to `products`, and a product fix applies to every past trip automatically.
 - **Unit prices are derived** in `v_unit_price`, never stored. Compare only rows that share a `base_unit` (g, mL or ct). Weight oz and fl oz are separate units.

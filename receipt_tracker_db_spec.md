@@ -21,6 +21,7 @@ Sample questions the database must be able to answer:
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
 - **Everything the receipt prints is recorded.** A printed value is stored even when v1 doesn't use it yet (for example, a line's FSA mark), because it can't be recovered later without the photo. Values the receipt doesn't print are never filled in.
+- **Identifiers for people and accounts are never stored.** The one exception to the rule above: the database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. They aren't needed to compare prices, and leaving them out reduces the sensitive data the tool keeps (13.6).
 - **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
 
 ## 3. Technology
@@ -80,7 +81,6 @@ CREATE TABLE trips (
   total_cents        INTEGER,            -- NULL until the part of the receipt with the total is read (incomplete trip, 7.1 step 2)
   savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
   fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
-  card_last4     TEXT,
   receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.7)
   trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder; NULL for CSV imports
   needs_review   INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0,1)),
@@ -290,7 +290,7 @@ v1 only records what receipts print about FSA. Reports, computed totals and revi
 `import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing.
 
 The columns are the trip JSON fields (7.8), flattened. Money is in integer cents, as in the JSON.
-- **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `card_last4`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents`, `notes`.
+- **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents`, `notes`.
 - **`row_type`**: `line` or `adjustment`.
 - **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`, `fsa_mark`.
 - **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents` (negative).
@@ -314,7 +314,7 @@ The file has two sections, so what was read stays apart from what was inferred:
 - **`receipt`** holds only what the receipt prints, copied exactly. It is the part to check against the photo. A value that isn't printed is `null`, never filled in.
 - **`interpretation`** holds what Claude believes beyond the printed text: expanded abbreviations, brand, pack size, category. Every value there is a proposal for the user to confirm, never a fact.
 
-Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD` and times are `HH:MM`. The file holds no database ids and no values the loader computes (7.7).
+Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD` and times are `HH:MM`. The file holds no database ids and no values the loader computes (7.7). It also holds none of the identifiers listed in section 2 (card digits, member numbers, names, prescription numbers and so on), even when the receipt prints them.
 
 **Top level**
 
@@ -329,7 +329,7 @@ Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD`
 | Field | Required | Maps to |
 |---|---|---|
 | `store.chain`, `store.branch`, `store.store_number`, `store.address` | `chain` only | `stores` (found or created as in 7.1 step 1) |
-| `trip_date`, `trip_time`, `transaction_no`, `card_last4` | `trip_date` only | `trips` |
+| `trip_date`, `trip_time`, `transaction_no` | `trip_date` only | `trips` |
 | `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | no | `trips`. A missing `total_cents` makes the trip incomplete (7.1 step 2). |
 | `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
 | `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` (negative). Trip-level promotions only. |
@@ -374,7 +374,6 @@ Example (values invented):
     "trip_date": "2026-10-30",
     "trip_time": "14:32",
     "transaction_no": "0118-04-2231",
-    "card_last4": "4417",
     "subtotal_cents": 2698,
     "tax_cents": 118,
     "total_cents": 2816,
@@ -458,6 +457,7 @@ Every load prints:
 - [ ] After the top half of a receipt (no total) is loaded, loading the bottom half as a new trip is stopped as "possibly part of trip N", and `--update N` with the combined JSON completes the trip.
 - [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
+- [ ] No card digits, approval codes, membership or loyalty numbers, phone numbers, personal names or prescription numbers appear in the database or in any saved trip JSON (13.6).
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
 
 ## 11. Out of Scope (v1)
@@ -520,3 +520,10 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 - **Alternatives considered.** Storing photos in the database as BLOBs, rejected because it bloats the file and makes photos hard to open. Keeping them in the repository, rejected for privacy. Treating the JSON as temporary, rejected because it is the only exact record of what Claude read.
 - **Consequences.** Files are copied, never moved, and a failed or rejected load copies nothing. The JSON holds no database ids and no loader-computed values. An update (7.9) replaces the trip's JSON and adds new photos with a suffix.
 - **Discussion.** [PR thread on where photos are saved](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4565734859), [PR thread on the trip JSON](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818933).
+
+### 13.6 Identifiers for people and accounts are never stored
+- **Decision.** The database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. Claude leaves them out when it reads a receipt, and the schema has no columns for them. This is the one exception to "everything the receipt prints is recorded" (section 2).
+- **Why.** To reduce the sensitive data the tool keeps, for security. None of these values is needed to compare prices, and the database and JSON files are the ones most likely to be copied, synced or pasted into a conversation. Prescription numbers and patient names are health information, more sensitive than anything financial.
+- **Alternatives considered.** Keeping `trips.card_last4` to match trips to card statements, rejected because store, date and total usually make that match, and nothing in v1 used it. Using approval codes as a duplicate key, rejected because the keys in 7.1 step 2 are enough.
+- **Consequences.** `card_last4` was removed from the schema, the trip JSON and the history CSV. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.7). Whether to delete photos after a retention period is still undecided.
+- **Discussion.** Settled outside the PR, during the review of this spec (November 2026).
