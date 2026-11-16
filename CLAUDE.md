@@ -15,7 +15,7 @@ Python 3, standard library only: `sqlite3`, `argparse`, `csv`, `json`. **Add no 
 
 - `load_trip.py --file trip.json [--db receipts.db] [--image photo.jpg ...] [--receipts-dir DIR]` loads one trip from JSON shaped like the `trips` and `line_items` tables. It copies the photos and the JSON into the receipts folder (spec 7.7), which is never committed to git.
 - `import_history.py --history trips.csv` bulk-loads many trips from a CSV (one row per line item). It seeds the database from the existing "Grocery Price Tracker" doc after a one-time conversion of that doc to CSV.
-- `report.py --unit-prices <product> | --frequent [N]` runs reports, which can be exported as CSV or JSON.
+- There is no report program. Claude answers questions with SQL against the database, using the views (`v_unit_price`, `v_markdown`) for logic that is easy to get wrong.
 
 No build, lint or test tooling exists yet. The acceptance criteria in spec section 10 are the test targets, and they use real receipts as fixtures (the Oct 27, 2026 Grocery Outlet $5-off-$25 and the Oct 30 Costco receipt's printed FSA total of $12.17).
 

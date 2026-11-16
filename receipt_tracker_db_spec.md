@@ -15,7 +15,7 @@ Sample questions the database must be able to answer:
 
 ## 2. Background & Design Principles
 
-- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and the reports show "?" (not yet known, as opposed to not applicable). It never stores a guess.
+- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and answers show "?" (not yet known, as opposed to not applicable). It never stores a guess.
 - **Money is stored as integer cents.** This avoids floating-point rounding errors.
 - **Receipt text is not the product.** Receipts print abbreviations ("KS ALBACORE", "PE GRANOLA", "TF Sld Chp Thai Chil"). A mapping table connects each store's receipt text and item code to one canonical product, so the same product can be compared across stores.
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
@@ -48,15 +48,11 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 ### Bulk import (`import_history.py`)
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
 
-### Reports (`report.py`)
-- `--unit-prices <product>`: price per unit over time, by store.
-- `--frequent [N]`: most frequently purchased products.
-
 ## 5. Outputs
 
 - A SQLite database file.
 - Load summary on every run (see section 9).
-- Report results, printed to the terminal. A report can print CSV or JSON instead, for redirecting to a file on request; the tool itself never saves report files.
+- Answers to questions, from SQL that Claude runs against the database in conversation. There is no separate report program. Logic that is easy to get subtly wrong (unit conversion, comparing only like units) lives in the views in section 6, so every answer applies the same rules. The views can also be queried directly with `sqlite3`.
 
 ## 6. Schema
 
@@ -226,7 +222,7 @@ WHERE l.line_type = 'item';
 
 By-weight items compare across stores the same way as packaged ones: grapes bought at 2.5 lb for $4.98 and at 1.2 kg for $5.28 both come out in cents per gram (0.439¢ and 0.440¢, or about $1.99 and $2.00 per lb), whatever unit each receipt printed. A by-weight line with no printed weight shows "?" in every unit-price column.
 
-Reports display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
+Answers display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
 ### Derived view: markdown
 
@@ -404,7 +400,7 @@ Example (values invented):
 - **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
 - **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line. If an item ever has more than one printed discount line, the amounts are summed and `raw_discount_text` keeps every printed line, separated by newlines.
-- **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
+- **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and from `v_unit_price`.
 - **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments` as a negative amount (-500), not on a line. Savings printed against an item, such as member prices or Costco instant savings, fold into that line's `discount_cents` instead and never go in `trip_adjustments`.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
 - **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
@@ -427,8 +423,8 @@ Every load prints:
 - [ ] Importing the CSV converted from the existing doc produces one trip per dated section of the doc (16 as of Nov 10, 2026) whose line totals match the receipt totals in the doc.
 - [ ] Re-importing the same CSV produces no new rows and no errors.
 - [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
-- [ ] `--unit-prices tuna` shows Trader Joe's at about $1.99 per can and Costco at about $2.37 per can.
-- [ ] A product with no pack size shows "?" in unit-price reports, never a guessed number.
+- [ ] `v_unit_price` gives tuna at about $1.99 per can at Trader Joe's and about $2.37 per can at Costco (`cents_per_pack_unit`).
+- [ ] A product with no pack size has NULL unit-price columns in `v_unit_price` (shown as "?"), never a guessed number.
 - [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
 - [ ] Loading the Oct 30, 2026 Costco receipt stores the ibuprofen line with `fsa_marked = 1`, the trip with `fsa_total_cents = 1217`, and sets the ibuprofen product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
@@ -440,6 +436,7 @@ Every load prints:
 
 - Reading receipt photos automatically in code (done by Claude in conversation).
 - Shelf-price photos and comparing shelf prices with receipt prices (feature idea 3).
+- A report program. Questions are answered by Claude querying the database and its views (section 5).
 - A phone or web interface of the tool's own. Receipt photos are sent through a Claude conversation, which works from a phone.
 - Multi-user support and sign-in.
 - Currency other than US dollars.
