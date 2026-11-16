@@ -134,6 +134,16 @@ Show the markdown as its own visible column, so it's clear how much of a price w
 - **Flag how often an item goes on sale:** Over time, note which items are usually bought at a markdown and which are not, to guess whether a sale price is likely to come back.
 - **Database note:** The line items table already stores `price_c` (regular), `discount_c` (markdown), and `paid_c`, so this is mostly a reporting and display change, not a new stored column. The database spec adds a markdown view that lists discounted lines with the regular price, markdown amount, amount paid, and percent off.
 
+## 14. Verbatim receipt transcript
+
+Save a transcript of every printed line of the receipt, in order and exactly as printed, alongside the structured trip data.
+
+- **Why:** The trip JSON records only the fields designed so far. A transcript keeps everything else the receipt prints (register and lane numbers, the "items sold" count, survey codes), so a field added later can be pulled from saved transcripts instead of reopening hundreds of photos. It is also searchable and much faster to reread than a photo.
+- **Where it goes:** A `receipt.transcript` field in the trip JSON (a list of printed lines), so it is saved in the receipts folder next to the photo and reloaded by `--update`. It stays out of the database until something needs to query it.
+- **Rules:** Copy each line verbatim, keeping the spacing so the receipt's fixed-width columns stay aligned. Nothing is interpreted or corrected. Lines holding identifiers for people or accounts (card digits, member numbers, names, prescription details) are replaced with `[omitted]`, as in spec 13.6. Unreadable parts are marked, not guessed.
+- **Limits:** A transcript is Claude's reading, not the evidence. A misread in it can only be caught by checking the photo, and barcodes, faded sections and handwriting don't come through. So while the photo is kept, the photo is the record and the transcript is a convenience.
+- **Becomes important if photos are deleted:** If photos are ever deleted after a retention period (spec section 12), the transcript is the only remaining record of everything the receipt printed.
+
 ## Open questions
 
 - Whether the "N/A" shown for an unknown Unit Price should look different from a cell that is simply blank, now that the database stores unknown values as empty.

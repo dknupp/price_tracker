@@ -486,6 +486,7 @@ Every load prints:
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
 - At stores with no item codes, how should two different products that print identical receipt text be told apart?
+- How long should receipt photos be kept? Keeping them all (the v1 default) preserves the evidence for every trip and dispute. Deleting them after a retention period (for example 90 days, covering return and dispute windows) removes the last copy of identifiers such as card digits and member numbers (13.6), but older trips can then no longer be checked against a photo. Pharmacy receipts may deserve a shorter period, or cropping before upload, since they can show prescription details. If photos are deleted, the verbatim transcript (feature idea 14) becomes the remaining record.
 
 ## 13. Design Decisions
 
