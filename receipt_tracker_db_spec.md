@@ -39,7 +39,7 @@ No new dependencies. Receipt reading (photo to line items) is done by Claude in 
 ## 4. Inputs
 
 ### Loader (`load_trip.py`)
-- `--file` (required): path to a trip JSON file (same structure as the `trips` and `line_items` tables below).
+- `--file` (required): path to a trip JSON file in the format defined in 7.8.
 - `--db` (optional): database path. Defaults to `receipts.db`.
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
@@ -293,6 +293,101 @@ The trips already logged in the "Grocery Price Tracker" doc are converted to thi
 - The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
 - Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
 - The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
+
+### 7.8 Trip JSON format
+The file has two sections, so what was read stays apart from what was inferred:
+- **`receipt`** holds only what the receipt prints, copied exactly. It is the part to check against the photo. A value that isn't printed is `null`, never filled in.
+- **`interpretation`** holds what Claude believes beyond the printed text: expanded abbreviations, brand, pack size, category. Every value there is a proposal for the user to confirm, never a fact.
+
+Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD` and times are `HH:MM`. The file holds no database ids and no values the loader computes (7.7).
+
+**Top level**
+
+| Field | Required | Meaning |
+|---|---|---|
+| `format_version` | yes | `1`. The loader rejects versions it doesn't know. |
+| `receipt` | yes | Printed values, below. |
+| `interpretation` | yes | Proposed product details, below. May have no lines. |
+
+**`receipt`**
+
+| Field | Required | Maps to |
+|---|---|---|
+| `store.chain`, `store.branch`, `store.store_number`, `store.address` | `chain` only | `stores` (found or created as in 7.1 step 1) |
+| `trip_date`, `trip_time`, `transaction_no`, `card_last4` | `trip_date` only | `trips` |
+| `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents` | `total_cents` only | `trips` |
+| `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
+| `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` |
+| `coupons` | no | `coupons`: `description`, `valid_from`, `valid_to` |
+| `unreadable` | no | Short notes on parts of the photo that can't be read. Any entry sets `needs_review = 1` and is copied into `trips.notes` (section 8). |
+
+Each entry in `receipt.lines`:
+
+| Field | Required | Maps to |
+|---|---|---|
+| `line_no` | yes | `line_no`, in printed order starting at 1 |
+| `line_type` | no | `item` (default), `deposit` or `bag_fee` |
+| `item_code` | no | `store_items.item_code`; `null` when none is printed |
+| `raw_text` | yes | `raw_text`, exactly as printed |
+| `quantity` | no | `quantity`, default 1 |
+| `weight`, `weight_unit` | together | `weight`, `weight_unit`, as printed |
+| `price_cents` | yes | `price_cents`, before discount |
+| `discount_cents`, `raw_discount_text` | no | Printed discount lines folded into this item (section 8); default 0 and `null` |
+| `printed_paid_cents` | no | Not stored. Only when the receipt prints a paid amount for the line; the loader compares it with its own `paid_cents` (7.2). |
+| `taxable_mark` | no | `is_taxable`: `true`/`false` from the receipt's tax mark, `null` when the receipt shows no marks |
+| `fsa_mark` | no | Sets `is_fsa` (7.5); default `false` |
+
+**`interpretation`**
+
+| Field | Meaning |
+|---|---|
+| `lines` | One entry per `receipt.lines` entry Claude has a proposal for, matched by `line_no`. Fields: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`, and `basis` (where the values came from, such as "matches known product" or "expanded KS = Kirkland Signature"). |
+| `notes` | Free text, copied into `trips.notes`. |
+
+How the loader uses `interpretation`:
+- If a line's code or text already maps to a product (7.1 step 4), the existing product wins and the proposal is ignored.
+- Otherwise the loader creates the product from the proposal and lists each proposed value in the post-load review (7.4). A line with no proposal, or no `name`, is left unidentified (`product_id` NULL).
+- `null` means unknown, as everywhere else. Claude leaves a value `null` rather than guess it.
+
+Example (values invented):
+
+```json
+{
+  "format_version": 1,
+  "receipt": {
+    "store": { "chain": "Costco", "branch": "San Leandro", "store_number": "118", "address": null },
+    "trip_date": "2026-10-30",
+    "trip_time": "14:32",
+    "transaction_no": "0118-04-2231",
+    "card_last4": "4417",
+    "subtotal_cents": 2698,
+    "tax_cents": 118,
+    "total_cents": 2816,
+    "savings_cents": 300,
+    "lines": [
+      { "line_no": 1, "item_code": "1159374", "raw_text": "KS ALBACORE", "price_cents": 1899,
+        "discount_cents": 300, "raw_discount_text": "/1159374 -3.00", "taxable_mark": false },
+      { "line_no": 2, "item_code": "1287620", "raw_text": "KS IBUPROFEN", "price_cents": 1099,
+        "taxable_mark": true, "fsa_mark": true }
+    ],
+    "coupons": [
+      { "description": "$5 off $25, excludes alcohol", "valid_from": "2026-11-01", "valid_to": "2026-11-30" }
+    ],
+    "unreadable": []
+  },
+  "interpretation": {
+    "lines": [
+      { "line_no": 1, "brand": "Kirkland Signature", "name": "Albacore tuna", "category": "canned fish",
+        "pack_count": 8, "unit_size": 7, "unit_measure": "oz", "is_organic": null,
+        "basis": "matches known product" },
+      { "line_no": 2, "brand": "Kirkland Signature", "name": "Ibuprofen 200 mg", "category": "pharmacy",
+        "pack_count": null, "unit_size": null, "unit_measure": null, "is_organic": null,
+        "basis": "expanded KS = Kirkland Signature; pack size not printed" }
+    ],
+    "notes": ""
+  }
+}
+```
 
 ## 8. Edge Cases & Error Handling
 
