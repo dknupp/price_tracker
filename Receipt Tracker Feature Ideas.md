@@ -132,7 +132,7 @@ Show the markdown as its own visible column, so it's clear how much of a price w
 - **Add a markdown percent:** Show the discount as a percent of the regular price, such as 43% off, so deals are easy to compare across items.
 - **Compare on both prices:** In price comparisons and the shopping list optimizer, show the sale price and the regular price side by side, so a one-time markdown isn't mistaken for the normal price. The Costco chili at $2.33 a can was $3.13 without its $4.80 markdown.
 - **Flag how often an item goes on sale:** Over time, note which items are usually bought at a markdown and which are not, to guess whether a sale price is likely to come back.
-- **Database note:** The line items table already stores `price_c` (regular), `discount_c` (markdown), and `paid_c`, so this is mostly a reporting and display change, not a new stored column. The database spec adds a markdown view that lists discounted lines with the regular price, markdown amount, amount paid, and percent off.
+- **Database note:** The line items table already stores `price_cents` (regular), `discount_cents` (markdown), and `paid_cents`, so this is mostly a reporting and display change, not a new stored column. The database spec adds a markdown view that lists discounted lines with the regular price, markdown amount, amount paid, and percent off.
 
 ## 14. Verbatim receipt transcript
 
