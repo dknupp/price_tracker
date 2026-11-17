@@ -37,14 +37,14 @@ Sample questions the database must be able to answer:
 
 Everything else (`CHECK` constraints, expression indexes, and partial indexes with `WHERE`) works unchanged in both.
 
-**Dependencies.** Well-known third-party packages may be used where they make the code simpler or more reliable. They are installed in the project's virtual environment (`.venv/`, kept out of git) and listed in `requirements.txt`, so the environment can be rebuilt. The standard library already covers SQLite, JSON, CSV and command-line arguments, so v1 may need few; `pytest` for the acceptance tests is a likely one.
+**Dependencies.** Well-known third-party packages may be used where they make the code simpler or more reliable. They are installed in the project's virtual environment (`.venv/`, kept out of git) and listed in `requirements.txt`, so the environment can be rebuilt. The standard library already covers SQLite, JSON and command-line arguments, so v1 may need few; `pytest` for the acceptance tests is a likely one.
 
 Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
 
 ## 4. Inputs
 
 ### Loader (`load_trip.py`)
-Loads one receipt into the database, or replaces a trip already there. It is the only way a single trip enters or changes in the database, so every trip goes through the same checks.
+Loads one receipt into the database, or replaces a trip already there. It is the only way a trip enters or changes in the database, so every trip goes through the same checks.
 - **Why it's needed:** Claude reads the receipt photo, but writing rows with ad hoc SQL would skip the duplicate-trip and integrity checks (7.1, 7.2) and could leave a half-loaded trip. The loader writes the trip and its lines in one transaction, works out derived values itself (such as `paid_cents` and `needs_review`), and files the photos and the trip JSON in the receipts folder.
 - **Invoked by:** Claude, in the conversation where the user uploads a receipt photo. Claude writes the trip JSON from the photo, then runs the loader. The user can also run it by hand.
 - **Consumers:** the database, which Claude queries to answer questions (section 5). The load summary is read by Claude, which relays it and asks the review questions (7.4) in the conversation.
@@ -58,18 +58,6 @@ Arguments:
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
 - `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.9). It can't be combined with `--force`.
 - `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
-
-### Bulk import (`import_history.py`)
-Loads many trips at once from a CSV file, to seed the database with trips recorded before this tool existed.
-- **Why it's needed:** the trips already logged in the "Grocery Price Tracker" doc, with their prices and confirmed pack sizes, would otherwise have to be re-entered one trip JSON at a time.
-- **Invoked by:** the user or Claude, normally once, after the doc has been converted to CSV (7.6). A re-run is safe: trips already loaded are skipped.
-- **Consumers:** the database, as for the loader.
-- **Input:** one CSV file with one row per line item (7.6).
-- **Output:** trips in the database, and a load summary per trip on standard output (section 9). It takes no photos and writes nothing to the receipts folder.
-- **Differences from the loader:** product details in the CSV are taken as confirmed rather than listed in the review, a near match only warns, and there is no `--force` or `--update` (7.1 step 2, 7.6).
-
-Arguments:
-- `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
 
 ## 5. Outputs
 
@@ -103,7 +91,7 @@ CREATE TABLE trips (
   savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
   fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
   receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.7)
-  trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder; NULL for CSV imports
+  trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder (7.7)
   needs_review   INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0,1)),
   notes          TEXT,
   UNIQUE (store_id, transaction_no)   -- trips with no transaction_no never conflict here; see 7.1 step 2
@@ -273,7 +261,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
 2. Check whether the trip is already logged, using the first key the receipt supports:
    1. `(store_id, transaction_no)`, when a transaction number is printed.
    2. Store, date and time, when there is no transaction number but a time is printed.
-   3. Store, date and total, plus the same lines (the ordered list of item code, or text when there is no code, with price), when neither is printed. This is mainly the history CSV (7.6).
+   3. Store, date and total, plus the same lines (the ordered list of item code, or text when there is no code, with price), when neither is printed.
 
    A match is reported as "already logged" with the existing trip's id, and nothing is loaded (the duplicate Aug 11 upload would have been caught by key 1). `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
 
@@ -283,7 +271,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
    - the totals are equal, or
    - at least 80% of the lines match, counted against whichever trip has more lines. A line matches when it has the same item code (or text, when there is no code) and the same price, and each existing line can match only once.
 
-   Two trips are never a near match when both print a transaction number and the numbers differ, or both print a time and the times are more than 10 minutes apart. A near match stops the load with "possibly the same receipt as trip N". The user then loads it anyway with `--force`, or uses `--update N` if the new reading is the better one (7.9). `import_history.py` reports near matches as warnings and loads the trip, since the history CSV comes from the user's own record, not a second photo.
+   Two trips are never a near match when both print a transaction number and the numbers differ, or both print a time and the times are more than 10 minutes apart. A near match stops the load with "possibly the same receipt as trip N". The user then loads it anyway with `--force`, or uses `--update N` if the new reading is the better one (7.9).
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
 4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
@@ -313,19 +301,8 @@ v1 only records what receipts print about FSA. Reports, computed totals and revi
 - An FSA total printed on the receipt is stored in `trips.fsa_total_cents` as printed, tax included. For example, the Oct 30, 2026 Costco receipt prints $12.17 for the ibuprofen ($10.99 plus $1.18 tax). It is not checked against the lines.
 - `products.is_fsa` collects what the marks show across trips and stores. It starts NULL (unknown). It is set to 1 when an FSA-marked line is linked to the product, at load or when the line is identified later. Only the user sets it to 0; a missing mark never does. Nothing in v1 reads it.
 
-### 7.6 Bulk import of trip history
-`import_history.py --history` reads a CSV file with one row per line item; the trip fields repeat on every row of that trip. Rows are grouped into trips, and each trip is loaded exactly as in 7.1 (same transaction, integrity checks, duplicate-trip rule and load summary), so a re-run adds nothing.
-
-The columns are the trip JSON fields (7.8), flattened. Money is in integer cents, as in the JSON.
-- **Trip columns**, repeated on every row of the trip: `chain`, `branch`, `store_number`, `address`, `trip_date`, `trip_time`, `transaction_no`, `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents`, `notes`.
-- **`row_type`**: `line` or `adjustment`.
-- **Line columns**, on `line` rows: `line_no`, `line_type`, `item_code`, `raw_text`, `quantity`, `weight`, `weight_unit`, `price_cents`, `discount_cents`, `raw_discount_text`, `taxable_mark`, `fsa_mark`.
-- **Adjustment columns**, on `adjustment` rows: `adj_kind`, `adj_amount_cents` (negative).
-- **Product columns**, on `line` rows: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`. These come from the user's own doc, so they are taken as confirmed rather than listed in the post-load review. A blank cell means unknown.
-
-Rows of one trip are grouped by store, date and transaction number (or store, date and total when there is none). Coupons are not imported.
-
-The trips already logged in the "Grocery Price Tracker" doc are converted to this CSV once, outside the tool, before the first import. That doc has no transaction numbers or times, so duplicate detection for those trips uses key 3 of 7.1 step 2 (store, date, total and lines). Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are carried into the CSV so they load into `products`.
+### 7.6 Bulk import (removed)
+v1 has no bulk import: every trip is loaded from a trip JSON (7.8) by `load_trip.py`, so every trip goes through the same checks. (Section number kept so references stay stable.)
 
 ### 7.7 Receipt photos and trip files
 - Receipt photos and the trip JSON that Claude writes from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
@@ -458,7 +435,7 @@ A long receipt can be loaded in parts, in any order. A first part with no total 
 - **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
 - **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt are added by updating the trip (7.9), and are named as in 7.7.
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
-- **Re-running a load or import**: must not crash or double-insert.
+- **Re-running a load**: must not crash or double-insert.
 
 ## 9. Load Summary
 
@@ -471,8 +448,7 @@ Every load prints:
 
 ## 10. Acceptance Criteria
 
-- [ ] Importing the CSV converted from the existing doc produces one trip per dated section of the doc (16 as of Nov 10, 2026) whose line totals match the receipt totals in the doc.
-- [ ] Re-importing the same CSV produces no new rows and no errors.
+- [ ] Loading the same trip JSON twice adds no new rows the second time and raises no errors.
 - [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
 - [ ] `v_unit_price` gives tuna at about $1.99 per can at Trader Joe's and about $2.37 per can at Costco (`cents_per_pack_unit`).
 - [ ] A product with no pack size has NULL unit-price columns in `v_unit_price` (shown as "?"), never a guessed number.
@@ -534,7 +510,7 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 - **Decision.** A trip that matches one already logged is skipped as "already logged", not loaded with a warning. The match uses the first key the receipt supports: transaction number; then store, date and time; then store, date and total plus the same lines (7.1 step 2). `--force` loads a trip anyway when the match was on the second or third key, never on a transaction number. A trip with no total yet is incomplete, and a new trip that may be part of it is stopped so it can be added with `--update`. A near match (same store and date, and equal totals or at least 80% of lines matching) is stopped with a question rather than skipped, since it is probably, but not certainly, the same receipt read differently.
 - **Why.** Loading a duplicate double-counts spending and purchases, which is worse than occasionally asking the user to confirm a genuine repeat trip. A transaction number is unique, so a match on it is never overridden. The weaker keys can match two genuinely separate trips, so they need an override. Store, date and total alone was too weak: a misread total misses a real duplicate, and two small trips with the same total match by accident.
 - **Alternatives considered.** Warning and loading anyway (the original draft), rejected because duplicates would silently skew every total. Total as the only fallback key, rejected as above. A hash of the photo file, rejected because a second photo of the same receipt has a different hash.
-- **Consequences.** Re-running a load or import is safe and adds nothing. `import_history.py` has no `--force`, and reports near matches as warnings instead of stopping. The history CSV relies on the third key, since the doc it comes from has no transaction numbers or times. A long receipt can be loaded in parts, in any order.
+- **Consequences.** Re-running a load is safe and adds nothing. A long receipt can be loaded in parts, in any order.
 - **Discussion.** [PR thread on duplicates without a transaction number](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818910), [PR thread on updating a trip](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818958).
 
 ### 13.4 Weighed items are converted to base units using the unit printed on the receipt
@@ -555,5 +531,5 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 - **Decision.** The database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. Claude leaves them out when it reads a receipt, and the schema has no columns for them. This is the one exception to "everything the receipt prints is recorded" (section 2).
 - **Why.** To reduce the sensitive data the tool keeps, for security. None of these values is needed to compare prices, and the database and JSON files are the ones most likely to be copied, synced or pasted into a conversation. Prescription numbers and patient names are health information, more sensitive than anything financial.
 - **Alternatives considered.** Keeping `trips.card_last4` to match trips to card statements, rejected because store, date and total usually make that match, and nothing in v1 used it. Using approval codes as a duplicate key, rejected because the keys in 7.1 step 2 are enough.
-- **Consequences.** `card_last4` was removed from the schema, the trip JSON and the history CSV. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.7). Whether to delete photos after a retention period is still undecided.
+- **Consequences.** `card_last4` was removed from the schema and the trip JSON. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.7). Whether to delete photos after a retention period is still undecided.
 - **Discussion.** Settled outside the PR, during the review of this spec (November 2026).
