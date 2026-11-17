@@ -17,6 +17,22 @@ Right at checkout, the user photographs the receipt and the tool immediately sca
 - **Why:** On the October 30, 2026 Costco trip, the Kirkland Signature albacore tuna was charged twice, but only one 8-pack was bought. Catching that while still in the store means the user can get a refund at the service desk instead of going back later.
 - **Flag same-item repeats:** Highlight lines with the same item code or name appearing more than once, and ask whether the quantity is really right.
 - **Design sketch (removed from the v1 spec):** a `line_items.suspected_duplicate` flag (0/1), set on load when another line in the same trip has the same item code (or the same text when there is no code) and the same price. Flagged lines appear in the load summary, and the user confirms one (creating a `disputes` row) or clears it. It was dropped from v1 because buying several of the same item is common and true double charges are rare. Open issues carried over: some stores print one line per unit, so repeats are normal there; and it's unclear whether to flag both lines or only the later one. A `--duplicates` report listed flagged lines.
+- **`disputes` table (removed from the v1 spec, 13.8):** one row per problem the user raises about a line, such as a double charge or a wrong price, so it can be followed up with the store.
+
+  ```sql
+  CREATE TABLE disputes (
+    dispute_id   INTEGER PRIMARY KEY,
+    line_id      INTEGER NOT NULL REFERENCES line_items,
+    reason       TEXT NOT NULL,          -- double charge, wrong price (entered by the user when they notice one)
+    amount_cents INTEGER NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'open'
+                 CHECK (status IN ('open','refunded','denied')),
+    opened_on    TEXT NOT NULL,
+    resolved_on  TEXT
+  );
+  ```
+
+  Updates must keep disputes when they replace a trip's lines (spec 7.7). An update deletes the old lines and loads new ones, so each dispute has to be re-linked to the new line with the same `line_no`, and the update refused if that line is gone. Because `line_id` has no `ON DELETE CASCADE` and `line_items` has `UNIQUE (trip_id, line_no)`, the old lines can be neither deleted first nor kept while the new ones are inserted, so the loader needs a special order of steps. Adding the table is one migration with no change to existing data.
 
 ## 3. Shelf price versus receipt price comparison
 

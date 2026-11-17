@@ -1,6 +1,6 @@
 # Price Tracker
 
-Price Tracker logs grocery receipts into a SQLite database, with one receipt per shopping trip. You can then compare what you paid for a product over time and across stores, and catch receipt problems such as double charges or price mismatches.
+Price Tracker logs grocery receipts into a SQLite database, with one receipt per shopping trip. You can then compare what you paid for a product over time and across stores. Each receipt's totals are checked when it is loaded, which catches misread photos and some receipt errors.
 
 The workflow: you send a photo of a receipt in a chat conversation (it works from a phone). The photo is read and written out as trip JSON, which is loaded with `load_trip.py`. Questions are answered by running SQL against the database.
 
