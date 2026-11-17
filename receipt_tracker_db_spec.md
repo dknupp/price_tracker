@@ -44,6 +44,14 @@ Receipt reading (photo to line items) is done by Claude in conversation for v1, 
 ## 4. Inputs
 
 ### Loader (`load_trip.py`)
+Loads one receipt into the database, or replaces a trip already there. It is the only way a single trip enters or changes in the database, so every trip goes through the same checks.
+- **Why it's needed:** Claude reads the receipt photo, but writing rows with ad hoc SQL would skip the duplicate-trip and integrity checks (7.1, 7.2) and could leave a half-loaded trip. The loader writes the trip and its lines in one transaction, works out derived values itself (such as `paid_cents` and `needs_review`), and files the photos and the trip JSON in the receipts folder.
+- **Invoked by:** Claude, in the conversation where the user uploads a receipt photo. Claude writes the trip JSON from the photo, then runs the loader. The user can also run it by hand.
+- **Consumers:** the database, which Claude queries to answer questions (section 5). The load summary is read by Claude, which relays it and asks the review questions (7.4) in the conversation.
+- **Input:** one trip JSON file (7.8), and optionally the receipt photos.
+- **Output:** a new or replaced trip in the database; copies of the photos and the trip JSON in the receipts folder (7.7); the load summary on standard output (section 9).
+
+Arguments:
 - `--file` (required): path to a trip JSON file in the format defined in 7.8.
 - `--db` (optional): database path. Defaults to `receipts.db`.
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.7).
@@ -52,6 +60,15 @@ Receipt reading (photo to line items) is done by Claude in conversation for v1, 
 - `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
 
 ### Bulk import (`import_history.py`)
+Loads many trips at once from a CSV file, to seed the database with trips recorded before this tool existed.
+- **Why it's needed:** the trips already logged in the "Grocery Price Tracker" doc, with their prices and confirmed pack sizes, would otherwise have to be re-entered one trip JSON at a time.
+- **Invoked by:** the user or Claude, normally once, after the doc has been converted to CSV (7.6). A re-run is safe: trips already loaded are skipped.
+- **Consumers:** the database, as for the loader.
+- **Input:** one CSV file with one row per line item (7.6).
+- **Output:** trips in the database, and a load summary per trip on standard output (section 9). It takes no photos and writes nothing to the receipts folder.
+- **Differences from the loader:** product details in the CSV are taken as confirmed rather than listed in the review, a near match only warns, and there is no `--force` or `--update` (7.1 step 2, 7.6).
+
+Arguments:
 - `--history` (required): path to a CSV export containing multiple trips to be ingested (such as might be used to seed the database).
 
 ## 5. Outputs
@@ -482,6 +499,7 @@ Every load prints:
 - FSA reports, FSA totals computed by the tool, and FSA review prompts (feature idea 4). v1 only records FSA marks and totals as printed.
 - Automatic submission of FSA claims or store refund requests.
 - Automatic detection of duplicate charges (feature idea 2).
+- Price predictions, and scraping prices from store websites (future iterations, section 1).
 - Expiration dates, printed or estimated (feature idea 12; planned for v2).
 
 ## 12. Open Questions
@@ -501,7 +519,6 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 ### 13.1 Money is stored as integer cents, in `_cents` columns
 - **Decision.** Every money value is an `INTEGER` number of cents, in a column whose name ends in `_cents` (`price_cents`, `total_cents`).
 - **Why.** Floating-point numbers can't hold most decimal amounts exactly, so sums drift by fractions of a cent and integrity checks such as "lines add up to the subtotal" fail on correct receipts. Integers add exactly. The suffix makes the unit visible wherever the column is used, so a value in cents is never mistaken for dollars.
-- Price predictions, and scraping prices from store websites (future iterations, section 1).
 - **Alternatives considered.** `REAL` dollars, rejected for rounding. `NUMERIC`/`DECIMAL`, rejected because SQLite has no true decimal type and would store such values as floating point anyway. The shorter suffix `_c`, used in early drafts and renamed because it isn't a recognized convention and is easy to misread.
 - **Consequences.** Conversion to dollars happens only for display. Division (unit prices) produces fractional cents in views, which is fine because nothing derived is stored.
 - **Discussion.** [PR thread on the paid-amount CHECK and the rename](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
