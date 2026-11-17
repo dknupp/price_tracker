@@ -4,7 +4,7 @@
 
 This project aims to provide a way to track prices for commonly purchased items. (In the first iteration, it's purely retrospective. In future iterations, it may support pricing predictions by scraping prices from store websites.)
 
-The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that every receipt's totals are checked when it is loaded, which catches misread photos, missing parts of a long receipt and some store arithmetic errors (7.2). Catching and tracking double charges is left for later (feature idea 2).
+The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that every receipt's totals are checked when it is loaded, which catches misread photos, missing parts of a long receipt and some store arithmetic errors (7.2).
 
 Receipt photos can be uploaded from a phone before even leaving the store.
 
