@@ -1,6 +1,6 @@
-# Receipt Tracker: Feature Ideas
+# Price Tracker: Feature Ideas
 
-A running list of features to build into Receipt Tracker, the grocery trip and price tracking tool. These are brainstorm-stage ideas, not fully specified.
+A running list of features to build into Price Tracker, the tool that tracks prices from grocery receipts. These are brainstorm-stage ideas, not fully specified.
 
 ## 1. Post-trip receipt review
 
