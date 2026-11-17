@@ -4,7 +4,7 @@
 
 This project aims to provide a way to track prices for commonly purchased items. (In the first iteration, it's purely retrospective. In future iterations, it may support pricing predictions by scraping prices from store websites.)
 
-The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
+The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that every receipt's totals are checked when it is loaded, which catches misread photos, missing parts of a long receipt and some store arithmetic errors (7.2).
 
 Receipt photos can be uploaded from a phone before even leaving the store.
 
@@ -69,7 +69,7 @@ Arguments:
 
 ### Overview
 
-Nine tables and two views. Money columns end in `_cents` (13.1), and NULL means "not yet known" (section 2).
+Eight tables and two views. Money columns end in `_cents` (13.1), and NULL means "not yet known" (section 2).
 
 **Tables**
 
@@ -83,7 +83,6 @@ Nine tables and two views. Money columns end in `_cents` (13.1), and NULL means 
 | `unit_conversions` | a unit of measure | | Converts each unit to a base unit (g, mL or ct). Fixed seed data. |
 | `trip_adjustments` | a trip-level promotion, such as $5 off $25 | `trips` | Always a negative amount. |
 | `coupons` | a coupon printed on a receipt | `trips`, `stores` | Expiry dates, and the trip it was used on, if any. |
-| `disputes` | a problem the user raised about a line, such as a double charge | `line_items` | Amount and status (open, refunded, denied). |
 
 **Views**
 
@@ -99,7 +98,7 @@ stores ──< trips ──< line_items >── store_items >── products >�
 stores ──< store_items
 ```
 
-Read `A ──< B` as "one A has many B", and `A >── B` as "many A belong to one B". Adjustments, coupons and disputes hang off `trips` and `line_items` and are left out of the diagram.
+Read `A ──< B` as "one A has many B", and `A >── B` as "many A belong to one B". Adjustments and coupons hang off `trips` and are left out of the diagram.
 
 A store's receipt text or item code (`store_items`) maps to one canonical product, so the same product bought at different stores, or printed differently on different days, compares directly.
 
@@ -211,17 +210,6 @@ CREATE TABLE coupons (
   valid_from  TEXT,
   valid_to    TEXT,
   used_trip_id INTEGER REFERENCES trips
-);
-
-CREATE TABLE disputes (
-  dispute_id  INTEGER PRIMARY KEY,
-  line_id     INTEGER NOT NULL REFERENCES line_items,
-  reason      TEXT NOT NULL,          -- double charge, wrong price (entered by the user when they notice one)
-  amount_cents    INTEGER NOT NULL,
-  status      TEXT NOT NULL DEFAULT 'open'
-              CHECK (status IN ('open','refunded','denied')),
-  opened_on   TEXT NOT NULL,
-  resolved_on TEXT
 );
 
 CREATE INDEX idx_trips_date        ON trips (trip_date);
@@ -446,7 +434,6 @@ An update replaces a loaded trip with a corrected or more complete reading of th
 2. `load_trip.py --file trip.json --update <trip_id> [--image photo.jpg ...]` replaces the trip in one transaction. The trip's fields are overwritten, and its lines and adjustments are deleted and loaded again from the file as in 7.1 step 4. The trip keeps its `trip_id`. If anything fails, the trip is left exactly as it was.
 3. The integrity checks (7.2) run again, and `needs_review` is set from this load alone, as for a new trip.
 4. Rows that point into the trip are kept:
-   - Each dispute is re-linked to the new line with the same `line_no`. If that line number no longer exists, the update is refused and nothing changes.
    - Coupons the trip printed are kept, including any `used_trip_id`. Coupons in the file that aren't recorded yet (matched by description) are added.
    - Product details and `store_items` mappings are reused, not reset. An update corrects what the receipt printed; product corrections still go to `products` (7.3).
 5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
@@ -492,7 +479,7 @@ The criteria are tested with made-up trip JSON files committed with the tests, n
 - [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
 - [ ] A second reading of an already logged receipt with no transaction number, where one line's price was misread and the time was misread by a minute (so key 2 doesn't match), is stopped as "possibly the same receipt as trip N" and loads only with `--force`.
 - [ ] A trip JSON with no total is rejected, and nothing is written to the database or the receipts folder.
-- [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
+- [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id`, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
 - [ ] No card digits, approval codes, membership or loyalty numbers, phone numbers, personal names or prescription numbers appear in the database or in any saved trip JSON (13.6).
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
@@ -517,7 +504,7 @@ The criteria are tested with made-up trip JSON files committed with the tests, n
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
 - At stores with no item codes, how should two different products that print identical receipt text be told apart?
-- How long should receipt photos be kept? Keeping them all (the v1 default) preserves the evidence for every trip and dispute. Deleting them after a retention period (for example 90 days, covering return and dispute windows) removes the last copy of identifiers such as card digits and member numbers (13.6), but older trips can then no longer be checked against a photo. Pharmacy receipts may deserve a shorter period, or cropping before upload, since they can show prescription details. If photos are deleted, the verbatim transcript (feature idea 14) becomes the remaining record.
+- How long should receipt photos be kept? Keeping them all (the v1 default) preserves the evidence for every trip. Deleting them after a retention period (for example 90 days, covering return windows) removes the last copy of identifiers such as card digits and member numbers (13.6), but older trips can then no longer be checked against a photo. Pharmacy receipts may deserve a shorter period, or cropping before upload, since they can show prescription details. If photos are deleted, the verbatim transcript (feature idea 14) becomes the remaining record.
 
 ## 13. Design Decisions
 
@@ -574,3 +561,10 @@ PR = [dknupp/price_tracker#2](https://github.com/dknupp/price_tracker/pull/2), t
 - **Alternatives considered.** Keeping incomplete trips and comparing totals with `IS`, so NULL matches NULL (the fix the loader design review suggested), rejected because loading in parts adds a stop outcome and a merge step that are easy to get wrong, while uploading every photo at once costs little. Allowing a trip with an unreadable total to load with a NULL total and a note, rejected because it brings NULL totals back, and so the same bug; such receipts should be rare, and the photo is still kept.
 - **Consequences.** A long receipt waits until every part is photographed. A missing middle part still loads, since the trip has a total, but the subtotal check flags it with the exact mismatch, and `--update` completes it later. `--update` stays for corrections and retaken photos.
 - **Discussion.** [Issue #14](https://github.com/dknupp/price_tracker/issues/14), from the review of the loader design ([#9](https://github.com/dknupp/price_tracker/issues/9)).
+
+### 13.8 The `disputes` table is left out of v1
+- **Decision.** v1 has no `disputes` table. It moves to feature idea 2 (catching double charges), together with the flow that creates disputes.
+- **Why.** Nothing in v1 writes a dispute. The loader is the only program and never creates one, and the only flow that does is feature idea 2, which is out of scope (section 11). Even empty, the table made updates harder. `disputes.line_id` references `line_items` without `ON DELETE CASCADE`, so an update (7.7) can't delete a trip's old lines while a dispute points at them, and inserting the new lines first fails on `UNIQUE (trip_id, line_no)`. Each dispute also had to be re-linked to the new line with the same `line_no`, and the update refused when that line was gone. That is a special order of steps and an extra refusal, kept only for a table that stays empty. Receipts are still loaded as printed and still checked (7.2), so misread photos, missing parts of a long receipt (13.7) and some store arithmetic errors are still caught.
+- **Alternatives considered.** Keeping the table and giving updates a special order of steps (move disputes aside, replace the lines, re-link by `line_no`), rejected as code and tests for a table nothing fills. Updating lines in place by `line_no` instead of deleting and reinserting them, rejected because it is more complex than a replace and handles added, removed and renumbered lines awkwardly.
+- **Consequences.** v1 has eight tables. 7.7 step 4 no longer re-links disputes, the update criterion in section 10 no longer mentions them, and the loader has no refusal for a disputed line that is gone. Adding the table later takes one migration and no change to existing data, and whatever adds it must keep disputes when an update replaces lines.
+- **Discussion.** [Issue #18](https://github.com/dknupp/price_tracker/issues/18), from the review of the loader design ([#13](https://github.com/dknupp/price_tracker/pull/13)).
