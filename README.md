@@ -19,7 +19,7 @@ The loader doesn't exist yet ([#9](https://github.com/dknupp/price_tracker/issue
 python load_trip.py --file trip.json --image receipt.jpg
 ```
 
-Options include `--db` (defaults to `receipts.db`), `--receipts-dir` (where photos and trip JSON are copied), and `--update TRIP_ID` to replace a trip already in the database. There is no report program. Claude answers questions by querying the database and its views.
+Options include `--db` (defaults to `receipts.db`), `--receipts-dir` (where photos and trip JSON are copied), and `--update TRIP_ID` to replace a trip already in the database.
 
 ## Privacy
 
