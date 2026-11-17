@@ -1,6 +1,6 @@
 # Loader Implementation Design (draft)
 
-Status: draft for [dknupp/price_tracker#9](https://github.com/dknupp/price_tracker/issues/9). Not agreed yet. Revised for spec 13.7 (all photos of a trip are loaded together, and every trip has a total, [#14](https://github.com/dknupp/price_tracker/issues/14)).
+Status: draft for [dknupp/price_tracker#9](https://github.com/dknupp/price_tracker/issues/9). Not agreed yet. Revised for spec 13.7 (all photos of a trip are loaded together, and every trip has a total, [#14](https://github.com/dknupp/price_tracker/issues/14)) and spec 13.8 (no `disputes` table in v1, [#18](https://github.com/dknupp/price_tracker/issues/18)).
 
 This document covers how `load_trip.py` is organized and built. What the loader does is defined in the spec (`price_tracker_design_spec.md`, sections 4, 7.1–7.7, 8, 9 and 10). Where this design needs a behavior change, it is listed in [Spec changes](#9-spec-changes) and goes into the spec when the design is agreed, so the spec stays the one place that defines behavior.
 
@@ -106,7 +106,9 @@ With `--json`, the same errors are a list of `{path, message}` objects.
 9. Copy files (section 6) and set `receipt_image` and `trip_json`.
 10. `COMMIT`.
 
-Any exception from step 4 on rolls back and removes the files step 9 created. `update_trip()` follows the same steps, with the differences in 7.7: the trip row is updated rather than inserted, its lines and adjustments are deleted and re-inserted, disputes are re-linked by `line_no` (or the update is refused), coupons are kept and new ones added, and the trip being updated is left out of the candidates.
+Any exception from step 4 on rolls back and removes the files step 9 created. `update_trip()` follows the same steps, with the differences in 7.7: the trip row is updated rather than inserted, coupons are kept and new ones added, and the trip being updated is left out of the candidates.
+
+**Replacing lines on an update.** Step 7 first deletes the trip's lines and adjustments, then inserts the new ones exactly as for a new trip. Nothing else in v1 points at a line (13.8), so the delete can't be blocked, and old and new lines never exist together, so `UNIQUE (trip_id, line_no)` can't fail. The trip row itself is updated, never deleted, so coupons keep their `trip_id` and `used_trip_id`. The delete is done in `update_trip()`, not left to `ON DELETE CASCADE`, so the order is visible in one place. When a later version adds disputes (feature idea 2), that is where they are kept.
 
 ## 5. Duplicate and near-match detection
 
@@ -168,7 +170,7 @@ Plain text by default, for a person running it by hand. `--json` prints the same
 | 2 | `invalid_input`: bad arguments, bad JSON (including a missing total), identifier found, image missing |
 | 3 | `already_logged` |
 | 4 | `possibly_same_receipt` |
-| 5 | `update_refused`: trip not found, matches another trip, or a disputed line is gone |
+| 5 | `update_refused`: trip not found, or the new data matches another trip (on a key, or as a near match: spec change 6) |
 | 1 | unexpected error (a bug); nothing is written |
 
 `already_logged` gets its own non-zero code, not 0, so a script can tell that nothing was loaded. It prints no traceback and no error, which is what the first criterion in section 10 asks for. Code 2 matches what `argparse` already uses for bad arguments.
@@ -186,7 +188,7 @@ Plain text by default, for a person running it by hand. `--json` prints the same
 
 When this design is agreed, these go into the spec:
 
-1. **`schema_version` table** (section 6): ten tables, not nine, and a short note on migrations in section 3.
+1. **`schema_version` table** (section 6): nine tables, not eight, and a short note on migrations in section 3.
 2. **Exit codes and `--json`** (sections 4 and 9).
 3. **Unknown fields and float cents are rejected** (7.6), and the identifier scan (7.6 and 13.6), as a new design decision record.
 4. **The base name is fixed at the first load** and kept by `--update`, even when the update corrects the transaction number or time the name came from (7.5, 7.7).
