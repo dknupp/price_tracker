@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Price Tracker is a tool for logging grocery receipts (one receipt = one trip) into SQLite to compare prices over time and across stores, and to catch receipt errors such as double charges. **There is no code yet.** The repo holds two design documents, and the code still has to be built from them:
 
-- `receipt_tracker_db_spec.md` is the authoritative v1 spec: schema, views, load behavior, edge cases and acceptance criteria. Build to it, and update it when a design decision changes.
-- `Receipt Tracker Feature Ideas.md` is a brainstorm-stage backlog. Ideas there are not specified, so don't build them unless asked.
+- `price_tracker_design_spec.md` is the authoritative v1 spec: schema, views, load behavior, edge cases and acceptance criteria. Build to it, and update it when a design decision changes.
+- `Price Tracker Feature Ideas.md` is a brainstorm-stage backlog. Ideas there are not specified, so don't build them unless asked.
 
 ## Planned stack and entry points (from the spec)
 
