@@ -1,8 +1,10 @@
-# Receipt Tracker — Database Specification
+# Price Tracker — Design Specification
 
 ## 1. Purpose
 
-Submit photographs of grocery trips (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
+This project aims to provide a way to track prices for commonly purchased items. (In the first iteration, it's purely retrospective. In future iterations, it may support pricing predictions by scraping prices from store websites.)
+
+The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
 
 Receipt photos can be uploaded from a phone before even leaving the store.
 
@@ -22,7 +24,7 @@ Sample questions the database must be able to answer:
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
 - **Everything the receipt prints is recorded.** A printed value is stored even when v1 doesn't use it yet (for example, a line's FSA mark), because it can't be recovered later without the photo. Values the receipt doesn't print are never filled in.
 - **Identifiers for people and accounts are never stored.** The one exception to the rule above: the database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. They aren't needed to compare prices, and leaving them out reduces the sensitive data the tool keeps (13.6).
-- **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known (for example, the Costco chili at $18.79, marked down $4.80).
+- **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known, for each item on a given receipt.
 
 ## 3. Technology
 
@@ -497,6 +499,7 @@ PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2
 ### 13.1 Money is stored as integer cents, in `_cents` columns
 - **Decision.** Every money value is an `INTEGER` number of cents, in a column whose name ends in `_cents` (`price_cents`, `total_cents`).
 - **Why.** Floating-point numbers can't hold most decimal amounts exactly, so sums drift by fractions of a cent and integrity checks such as "lines add up to the subtotal" fail on correct receipts. Integers add exactly. The suffix makes the unit visible wherever the column is used, so a value in cents is never mistaken for dollars.
+- Price predictions, and scraping prices from store websites (future iterations, section 1).
 - **Alternatives considered.** `REAL` dollars, rejected for rounding. `NUMERIC`/`DECIMAL`, rejected because SQLite has no true decimal type and would store such values as floating point anyway. The shorter suffix `_c`, used in early drafts and renamed because it isn't a recognized convention and is easy to misread.
 - **Consequences.** Conversion to dollars happens only for display. Division (unit prices) produces fractional cents in views, which is fine because nothing derived is stored.
 - **Discussion.** [PR thread on the paid-amount CHECK and the rename](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
