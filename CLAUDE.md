@@ -13,7 +13,7 @@ Price Tracker is a tool for logging grocery receipts (one receipt = one trip) in
 
 Python 3. The standard library covers the core (`sqlite3`, `argparse`, `json`). Well-known third-party packages may be added where they make the code simpler: install them in the project's `.venv/` (kept out of git) and list them in `requirements.txt` (spec section 3). The schema is plain SQL so it can port to PostgreSQL later, so avoid SQLite-only features where a portable form exists.
 
-- `load_trip.py --file trip.json [--db receipts.db] [--image photo.jpg ...] [--receipts-dir DIR] [--update TRIP_ID | --force]` loads one trip from JSON in the format of spec 7.8, or replaces an existing trip with `--update` (spec 7.9). It copies the photos and the JSON into the receipts folder (spec 7.7), which is never committed to git.
+- `load_trip.py --file trip.json [--db receipts.db] [--image photo.jpg ...] [--receipts-dir DIR] [--update TRIP_ID | --force]` loads one trip from JSON in the format of spec 7.6, or replaces an existing trip with `--update` (spec 7.7). It copies the photos and the JSON into the receipts folder (spec 7.5), which is never committed to git.
 - There is no report program. Claude answers questions with SQL against the database, using the views (`v_unit_price`, `v_markdown`) for logic that is easy to get wrong.
 
 No build, lint or test tooling exists yet. The acceptance criteria in spec section 10 are the test targets. Their fixtures are made-up trip JSON files committed with the tests, never real receipts.
@@ -24,7 +24,7 @@ These come from past errors on the project and are checked by the acceptance cri
 
 - **Money is integer cents** (`*_cents` columns). Never store a float money value.
 - **Store no identifiers for people or accounts.** No card digits, approval codes, member or loyalty numbers, phone numbers, names or prescription numbers in the database or the trip JSON (spec 13.6), even though the receipt prints them.
-- **Never guess.** An unknown pack size, weight, brand or organic status is stored as NULL and shown as "?" (not yet known). Ask the user in the post-load review (spec 7.4) instead of filling in a value.
+- **Never guess.** An unknown pack size, weight, brand or organic status is stored as NULL and shown as "?" (not yet known). Ask the user in the post-load review (spec 7.3) instead of filling in a value.
 - **`line_items.raw_text` is never edited.** Corrections go to `products`, and a product fix applies to every past trip automatically.
 - **Unit prices are derived** in `v_unit_price`, never stored. Compare only rows that share a `base_unit` (g, mL or ct). Weight oz and fl oz are separate units.
 - **Keep price, discount and paid separate**, with `paid_cents = price_cents - discount_cents`. Separately printed discount lines (such as Costco's `/1901580 -3.00`) fold into the item's `discount_cents`. Trip-level promotions go in `trip_adjustments` as negative cents. `trips.savings_cents` is stored as printed and never used in checks.
