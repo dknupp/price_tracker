@@ -37,7 +37,9 @@ Sample questions the database must be able to answer:
 
 Everything else (`CHECK` constraints, expression indexes, and partial indexes with `WHERE`) works unchanged in both.
 
-No new dependencies. Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
+**Dependencies.** Well-known third-party packages may be used where they make the code simpler or more reliable. They are installed in the project's virtual environment (`.venv/`, kept out of git) and listed in `requirements.txt`, so the environment can be rebuilt. The standard library already covers SQLite, JSON, CSV and command-line arguments, so v1 may need few; `pytest` for the acceptance tests is a likely one.
+
+Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
 
 ## 4. Inputs
 
