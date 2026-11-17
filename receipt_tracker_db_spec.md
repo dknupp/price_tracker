@@ -67,6 +67,44 @@ Arguments:
 
 ## 6. Schema
 
+### Overview
+
+Nine tables and two views. Money columns end in `_cents` (13.1), and NULL means "not yet known" (section 2).
+
+**Tables**
+
+| Table | One row is | Links to | Notes |
+|---|---|---|---|
+| `stores` | a store location | | Found or created by chain and store number (7.1 step 1). |
+| `trips` | one receipt, one shopping trip | `stores` | Printed totals, date, time and transaction number; `needs_review` flags a trip that needs the user's attention. |
+| `line_items` | one printed line: an item, deposit or fee | `trips`, `store_items` | Exact printed text, price, discount and amount paid; weight and unit for by-weight items. |
+| `store_items` | one item as a particular store identifies it | `stores`, `products` | Keyed by item code, or by printed text when the store prints no codes. `product_id` is NULL until the item is identified. |
+| `products` | a canonical product, the same across stores | `unit_conversions` | Brand, name, category, pack count and size, organic and FSA status. Corrections go here and apply to every trip. |
+| `unit_conversions` | a unit of measure | | Converts each unit to a base unit (g, mL or ct). Fixed seed data. |
+| `trip_adjustments` | a trip-level promotion, such as $5 off $25 | `trips` | Always a negative amount. |
+| `coupons` | a coupon printed on a receipt | `trips`, `stores` | Expiry dates, and the trip it was used on, if any. |
+| `disputes` | a problem the user raised about a line, such as a double charge | `line_items` | Amount and status (open, refunded, denied). |
+
+**Views**
+
+| View | Shows | Notes |
+|---|---|---|
+| `v_unit_price` | each item line's price per pack unit, per measure unit and per base unit | The only place unit prices are computed (they are never stored). Leaves out lines whose product isn't identified yet. |
+| `v_markdown` | each discounted line's regular price, markdown and percent off | Display only. |
+
+**How a receipt line reaches a product.** This chain is what makes comparison across stores possible:
+
+```
+stores ──< trips ──< line_items >── store_items >── products >── unit_conversions
+stores ──< store_items
+```
+
+Read `A ──< B` as "one A has many B", and `A >── B` as "many A belong to one B". Adjustments, coupons and disputes hang off `trips` and `line_items` and are left out of the diagram.
+
+A store's receipt text or item code (`store_items`) maps to one canonical product, so the same product bought at different stores, or printed differently on different days, compares directly.
+
+### Tables
+
 ```sql
 PRAGMA foreign_keys = ON;
 
