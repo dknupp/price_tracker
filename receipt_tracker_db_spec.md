@@ -73,8 +73,8 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE stores (
   store_id      INTEGER PRIMARY KEY,
   chain         TEXT NOT NULL,        -- Safeway, Trader Joe's, Costco, Grocery Outlet
-  branch        TEXT,                 -- Lake Merritt, San Leandro
-  store_number  TEXT,                 -- 3132, 0203, 118, 624
+  branch        TEXT,                 -- neighborhood or city name, if printed
+  store_number  TEXT,                 -- as printed, for example 0042
   address       TEXT
 );
 CREATE UNIQUE INDEX ux_stores ON stores (chain, COALESCE(store_number, ''));
@@ -263,7 +263,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
    2. Store, date and time, when there is no transaction number but a time is printed.
    3. Store, date and total, plus the same lines (the ordered list of item code, or text when there is no code, with price), when neither is printed.
 
-   A match is reported as "already logged" with the existing trip's id, and nothing is loaded (the duplicate Aug 11 upload would have been caught by key 1). `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
+   A match is reported as "already logged" with the existing trip's id, and nothing is loaded. `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
 
    **Incomplete trips.** A trip whose total hasn't been read yet (`total_cents` NULL, for example the top half of a long receipt) is incomplete and has `needs_review = 1`. If a new trip is at the same store on the same date as an incomplete trip, or is itself incomplete and has the same store and date as any existing trip, the loader stops and reports "possibly part of trip N". The user then completes trip N with `--update N` (7.9), or loads the new one as a separate trip with `--force`.
 
@@ -298,7 +298,7 @@ Answers update the `products` row, which fixes every past and future trip that u
 ### 7.5 FSA handling
 v1 only records what receipts print about FSA. Reports, computed totals and review prompts are left for their own design (feature idea 4).
 - A line the receipt marks as FSA-eligible is stored with `fsa_marked = 1`; every other line has 0, meaning "not marked", not "not eligible".
-- An FSA total printed on the receipt is stored in `trips.fsa_total_cents` as printed, tax included. For example, the Oct 30, 2026 Costco receipt prints $12.17 for the ibuprofen ($10.99 plus $1.18 tax). It is not checked against the lines.
+- An FSA total printed on the receipt is stored in `trips.fsa_total_cents` as printed, tax included. For example, a receipt with one FSA-eligible item at $10.99 and $1.18 tax on it prints an FSA total of $12.17. It is not checked against the lines.
 - `products.is_fsa` collects what the marks show across trips and stores. It starts NULL (unknown). It is set to 1 when an FSA-marked line is linked to the product, at load or when the line is identified later. Only the user sets it to 0; a missing mark never does. Nothing in v1 reads it.
 
 ### 7.6 Bulk import (removed)
@@ -374,10 +374,10 @@ Example (values invented):
 {
   "format_version": 1,
   "receipt": {
-    "store": { "chain": "Costco", "branch": "San Leandro", "store_number": "118", "address": null },
+    "store": { "chain": "Costco", "branch": "Springfield", "store_number": "0042", "address": null },
     "trip_date": "2026-10-30",
     "trip_time": "14:32",
-    "transaction_no": "0118-04-2231",
+    "transaction_no": "0042-04-2231",
     "subtotal_cents": 2698,
     "tax_cents": 118,
     "total_cents": 2816,
@@ -425,7 +425,7 @@ A long receipt can be loaded in parts, in any order. A first part with no total 
 
 ## 8. Edge Cases & Error Handling
 
-- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price. The two Trader Joe's BBQ salmon lines are the example.
+- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
 - **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line. If an item ever has more than one printed discount line, the amounts are summed and `raw_discount_text` keeps every printed line, separated by newlines.
 - **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and from `v_unit_price`.
@@ -448,13 +448,15 @@ Every load prints:
 
 ## 10. Acceptance Criteria
 
+The criteria are tested with made-up trip JSON files committed with the tests, never with real receipts, which can show the identifiers in 13.6. Each criterion states the values its test data needs.
+
 - [ ] Loading the same trip JSON twice adds no new rows the second time and raises no errors.
-- [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
-- [ ] `v_unit_price` gives tuna at about $1.99 per can at Trader Joe's and about $2.37 per can at Costco (`cents_per_pack_unit`).
+- [ ] A trip whose lines total $92.57, with a $5 off $25 promotion (-500 in `trip_adjustments`) and a printed subtotal of $87.57, passes the subtotal check.
+- [ ] With one store selling a single can of tuna for $1.99 and another selling an 8-can pack for $18.99, `v_unit_price` gives 199¢ and about 237¢ per can (`cents_per_pack_unit`).
 - [ ] A product with no pack size has NULL unit-price columns in `v_unit_price` (shown as "?"), never a guessed number.
-- [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
+- [ ] `is_organic` is NULL until the user says whether a product is organic and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
-- [ ] Loading the Oct 30, 2026 Costco receipt stores the ibuprofen line with `fsa_marked = 1`, the trip with `fsa_total_cents = 1217`, and sets the ibuprofen product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
+- [ ] Loading a receipt that marks one line as FSA-eligible and prints an FSA total of $12.17 stores that line with `fsa_marked = 1` and the trip with `fsa_total_cents = 1217`, and sets that line's product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
 - [ ] A load that fails partway leaves no partial trip in the database.
 - [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
 - [ ] A second reading of an already logged receipt with no transaction number, where one line's price was misread and the time was misread by a minute (so key 2 doesn't match), is stopped as "possibly the same receipt as trip N" and loads only with `--force`.
