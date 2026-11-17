@@ -39,15 +39,15 @@ Everything else (`CHECK` constraints, expression indexes, and partial indexes wi
 
 **Dependencies.** Well-known third-party packages may be used where they make the code simpler or more reliable. They are installed in the project's virtual environment (`.venv/`, kept out of git) and listed in `requirements.txt`, so the environment can be rebuilt. The standard library already covers SQLite, JSON and command-line arguments, so v1 may need few; `pytest` for the acceptance tests is a likely one.
 
-Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
+Receipt reading (photo to line items) happens in a chat conversation for v1, not in code in this project.
 
 ## 4. Inputs
 
 ### Loader (`load_trip.py`)
 Loads one receipt into the database, or replaces a trip already there. It is the only way a trip enters or changes in the database, so every trip goes through the same checks.
-- **Why it's needed:** Claude reads the receipt photo, but writing rows with ad hoc SQL would skip the duplicate-trip and integrity checks (7.1, 7.2) and could leave a half-loaded trip. The loader writes the trip and its lines in one transaction, works out derived values itself (such as `paid_cents` and `needs_review`), and files the photos and the trip JSON in the receipts folder.
-- **Invoked by:** Claude, in the conversation where the user uploads a receipt photo. Claude writes the trip JSON from the photo, then runs the loader. The user can also run it by hand.
-- **Consumers:** the database, which Claude queries to answer questions (section 5). The load summary is read by Claude, which relays it and asks the review questions (7.3) in the conversation.
+- **Why it's needed:** the receipt photo is read in conversation, but writing rows with ad hoc SQL would skip the duplicate-trip and integrity checks (7.1, 7.2) and could leave a half-loaded trip. The loader writes the trip and its lines in one transaction, works out derived values itself (such as `paid_cents` and `needs_review`), and files the photos and the trip JSON in the receipts folder.
+- **Invoked by:** the conversation where the user uploads a receipt photo. The trip JSON is written from the photo, then the loader is run. The user can also run it by hand.
+- **Consumers:** the database, which is queried to answer questions (section 5). The load summary is relayed to the user in the conversation, and the user is prompted with the review questions (7.3).
 - **Input:** one trip JSON file (7.6), and optionally the receipt photos.
 - **Output:** a new or replaced trip in the database; copies of the photos and the trip JSON in the receipts folder (7.5); the load summary on standard output (section 9).
 
@@ -63,7 +63,7 @@ Arguments:
 
 - A SQLite database file.
 - Load summary on every run (see section 9).
-- Answers to questions, from SQL that Claude runs against the database in conversation. There is no separate report program. Logic that is easy to get subtly wrong (unit conversion, comparing only like units) lives in the views in section 6, so every answer applies the same rules. The views can also be queried directly with `sqlite3`.
+- Answers to questions, from SQL run against the database in conversation. There is no separate report program. Logic that is easy to get subtly wrong (unit conversion, comparing only like units) lives in the views in section 6, so every answer applies the same rules. The views can also be queried directly with `sqlite3`.
 
 ## 6. Schema
 
@@ -272,7 +272,7 @@ By-weight items compare across stores the same way as packaged ones: grapes boug
 
 Answers display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
-Lines whose product isn't identified yet (`store_items.product_id` NULL) are left out of the view, since they have no product to compare against. Their trips already have `needs_review = 1`, and the lines appear in the view once they are identified, with no reload. When Claude answers a unit-price question, it says how many such lines exist, so an answer never looks more complete than it is.
+Lines whose product isn't identified yet (`store_items.product_id` NULL) are left out of the view, since they have no product to compare against. Their trips already have `needs_review = 1`, and the lines appear in the view once they are identified, with no reload. An answer to a unit-price question says how many such lines exist, so an answer never looks more complete than it is.
 
 ### Derived view: markdown
 
@@ -303,7 +303,7 @@ This is display only (feature idea 13): no new stored column, since price, disco
 
    A match is reported as "already logged" with the existing trip's id, and nothing is loaded. `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
 
-   **Near matches.** The keys above need exact values, so a second photo of the same receipt can slip past them if Claude reads it slightly differently (a misread digit, a cropped line). After the keys, the loader compares the new trip with every existing trip at the same store on the same date. It is a near match if either:
+   **Near matches.** The keys above need exact values, so a second photo of the same receipt can slip past them if it is read slightly differently (a misread digit, a cropped line). After the keys, the loader compares the new trip with every existing trip at the same store on the same date. It is a near match if either:
    - the totals are equal, or
    - at least 80% of the lines match, counted against whichever trip has more lines. A line matches when it has the same item code (or text, when there is no code) and the same price, and each existing line can match only once.
 
@@ -335,18 +335,18 @@ v1 only records what receipts print about FSA. Reports, computed totals and revi
 - `products.is_fsa` collects what the marks show across trips and stores. It starts NULL (unknown). It is set to 1 when an FSA-marked line is linked to the product, at load or when the line is identified later. Only the user sets it to 0; a missing mark never does. Nothing in v1 reads it.
 
 ### 7.5 Receipt photos and trip files
-- Receipt photos and the trip JSON that Claude writes from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
+- Receipt photos and the trip JSON written from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
 - Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`), and without either, the trip id (`..._costco_t57`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
 - The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
 - The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
-- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
-- Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
+- The trip JSON is the loader's input format: the contract between the photo reading and the loader, which enforces the rules in 7.1–7.2. Nothing writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
+- Saving the JSON is for checking and reloading: it records exactly what was read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
 - The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
 
 ### 7.6 Trip JSON format
 The file has two sections, so what was read stays apart from what was inferred:
 - **`receipt`** holds only what the receipt prints, copied exactly. It is the part to check against the photo. A value that isn't printed is `null`, never filled in.
-- **`interpretation`** holds what Claude believes beyond the printed text: expanded abbreviations, brand, pack size, category. Every value there is a proposal for the user to confirm, never a fact.
+- **`interpretation`** holds what is inferred beyond the printed text: expanded abbreviations, brand, pack size, category. Every value there is a proposal for the user to confirm, never a fact.
 
 Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD` and times are `HH:MM`. The file holds no database ids and no values the loader computes (7.5). It also holds none of the identifiers listed in section 2 (card digits, member numbers, names, prescription numbers and so on), even when the receipt prints them.
 
@@ -391,13 +391,13 @@ Each entry in `receipt.lines`:
 
 | Field | Meaning |
 |---|---|
-| `lines` | One entry per `receipt.lines` entry Claude has a proposal for, matched by `line_no`. Fields: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`, and `basis` (where the values came from, such as "matches known product" or "expanded KS = Kirkland Signature"). |
+| `lines` | One entry per `receipt.lines` entry with a proposal, matched by `line_no`. Fields: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`, and `basis` (where the values came from, such as "matches known product" or "expanded KS = Kirkland Signature"). |
 | `notes` | Free text, copied into `trips.notes`. |
 
 How the loader uses `interpretation`:
 - If a line's code or text already maps to a product (7.1 step 4), the existing product wins and the proposal is ignored.
 - Otherwise the loader creates the product from the proposal and lists each proposed value in the post-load review (7.3). A line with no proposal, or no `name`, is left unidentified (`product_id` NULL).
-- `null` means unknown, as everywhere else. Claude leaves a value `null` rather than guess it.
+- `null` means unknown, as everywhere else. A value is left `null` rather than guessed.
 
 Example (values invented):
 
@@ -440,9 +440,9 @@ Example (values invented):
 ```
 
 ### 7.7 Updating a trip
-An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a middle part of a long receipt that was missed and is photographed later; a cut-off or blurry photo that is retaken; or a price Claude misread.
+An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a middle part of a long receipt that was missed and is photographed later; a cut-off or blurry photo that is retaken; or a misread price.
 
-1. Claude writes a complete trip JSON (7.6) for the whole receipt as now read: every line from every photo, not just the new ones.
+1. A complete trip JSON (7.6) is written for the whole receipt as now read: every line from every photo, not just the new ones.
 2. `load_trip.py --file trip.json --update <trip_id> [--image photo.jpg ...]` replaces the trip in one transaction. The trip's fields are overwritten, and its lines and adjustments are deleted and loaded again from the file as in 7.1 step 4. The trip keeps its `trip_id`. If anything fails, the trip is left exactly as it was.
 3. The integrity checks (7.2) run again, and `needs_review` is set from this load alone, as for a new trip.
 4. Rows that point into the trip are kept:
@@ -452,7 +452,7 @@ An update replaces a loaded trip with a corrected or more complete reading of th
 5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
 6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
 
-**All photos of a trip are loaded together.** A receipt too long for one photo is photographed in parts, and every part is given in one load. If the photos look incomplete (no total, no date, lines cut off), Claude asks for the rest of the receipt, or for a fresh upload with every photo, and writes no JSON until it has them. The loader is the backstop: `trip_date` and `total_cents` are required (7.6), so a file without them is rejected and nothing is written. A receipt whose total can't be read at all (torn, faded) is not loaded; its photo can still be kept. A missing middle part can't be caught this way, since the trip has its total, but its lines won't add up to the subtotal, so the integrity check flags it (7.2) and `--update` completes it once the missing photo is in (13.7).
+**All photos of a trip are loaded together.** A receipt too long for one photo is photographed in parts, and every part is given in one load. If the photos look incomplete (no total, no date, lines cut off), the user is prompted for the rest of the receipt, or for a fresh upload with every photo, and no JSON is written until they are in. The loader is the backstop: `trip_date` and `total_cents` are required (7.6), so a file without them is rejected and nothing is written. A receipt whose total can't be read at all (torn, faded) is not loaded; its photo can still be kept. A missing middle part can't be caught this way, since the trip has its total, but its lines won't add up to the subtotal, so the integrity check flags it (7.2) and `--update` completes it once the missing photo is in (13.7).
 
 ## 8. Edge Cases & Error Handling
 
@@ -499,10 +499,10 @@ The criteria are tested with made-up trip JSON files committed with the tests, n
 
 ## 11. Out of Scope (v1)
 
-- Reading receipt photos automatically in code (done by Claude in conversation).
+- Reading receipt photos automatically in code (done in conversation).
 - Shelf-price photos and comparing shelf prices with receipt prices (feature idea 3).
-- A report program. Questions are answered by Claude querying the database and its views (section 5).
-- A phone or web interface of the tool's own. Receipt photos are sent through a Claude conversation, which works from a phone.
+- A report program. Questions are answered by querying the database and its views (section 5).
+- A phone or web interface of the tool's own. Receipt photos are sent through a chat conversation, which works from a phone.
 - Multi-user support and sign-in.
 - Currency other than US dollars.
 - FSA reports, FSA totals computed by the tool, and FSA review prompts (feature idea 4). v1 only records FSA marks and totals as printed.
@@ -555,22 +555,22 @@ PR = [dknupp/price_tracker#2](https://github.com/dknupp/price_tracker/pull/2), t
 - **Discussion.** [PR thread on by-weight unit prices](https://github.com/dknupp/price_tracker/pull/2#discussion_r4560818921).
 
 ### 13.5 Receipt photos and trip JSON live in a receipts folder outside git, and that folder is not a backup
-- **Decision.** The loader copies each receipt photo and the trip JSON Claude wrote from it into a receipts folder: a configurable root, for example in iCloud Drive, grouped by year with names such as `2026/2026-10-30_costco_<txn>.jpg` (7.5). The database stores paths relative to that folder. The folder is never committed to git. Keeping the JSON lets a trip be checked against its photo and loaded again after a loader fix, but it is not a full backup: `receipts.db` must be backed up too.
+- **Decision.** The loader copies each receipt photo and the trip JSON written from it into a receipts folder: a configurable root, for example in iCloud Drive, grouped by year with names such as `2026/2026-10-30_costco_<txn>.jpg` (7.5). The database stores paths relative to that folder. The folder is never committed to git. Keeping the JSON lets a trip be checked against its photo and loaded again after a loader fix, but it is not a full backup: `receipts.db` must be backed up too.
 - **Why.** Every trip must be traceable to its receipt photo, so the photos need a stable home. Relative paths let the folder move or sync without changing rows. Receipts show card digits and where the user shops, so they stay out of the repository. Answers from the post-load review (brands, pack sizes, which product a receipt line is) are stored only in `products` and `store_items`, so the JSON files alone can't rebuild the database.
-- **Alternatives considered.** Storing photos in the database as BLOBs, rejected because it bloats the file and makes photos hard to open. Keeping them in the repository, rejected for privacy. Treating the JSON as temporary, rejected because it is the only exact record of what Claude read.
+- **Alternatives considered.** Storing photos in the database as BLOBs, rejected because it bloats the file and makes photos hard to open. Keeping them in the repository, rejected for privacy. Treating the JSON as temporary, rejected because it is the only exact record of what was read.
 - **Consequences.** Files are copied, never moved, and a failed or rejected load copies nothing. The JSON holds no database ids and no loader-computed values. An update (7.7) replaces the trip's JSON and adds new photos with a suffix.
 - **Discussion.** [PR thread on where photos are saved](https://github.com/dknupp/price_tracker/pull/2#discussion_r4565734859), [PR thread on the trip JSON](https://github.com/dknupp/price_tracker/pull/2#discussion_r4560818933).
 
 ### 13.6 Identifiers for people and accounts are never stored
-- **Decision.** The database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. Claude leaves them out when it reads a receipt, and the schema has no columns for them. This is the one exception to "everything the receipt prints is recorded" (section 2).
+- **Decision.** The database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. They are left out when a receipt is read, and the schema has no columns for them. This is the one exception to "everything the receipt prints is recorded" (section 2).
 - **Why.** To reduce the sensitive data the tool keeps, for security. None of these values is needed to compare prices, and the database and JSON files are the ones most likely to be copied, synced or pasted into a conversation. Prescription numbers and patient names are health information, more sensitive than anything financial.
 - **Alternatives considered.** Keeping `trips.card_last4` to match trips to card statements, rejected because store, date and total usually make that match, and nothing in v1 used it. Using approval codes as a duplicate key, rejected because the keys in 7.1 step 2 are enough.
 - **Consequences.** `card_last4` was removed from the schema and the trip JSON. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.5). Whether to delete photos after a retention period is still undecided.
 - **Discussion.** Settled outside the PR, during the review of this spec (November 2026).
 
 ### 13.7 All photos of a trip are loaded together, and every trip has a total
-- **Decision.** A trip is loaded only once every part of its receipt has been photographed, and all the photos go in one load. `total_cents` is required in the trip JSON and `NOT NULL` in `trips`, so a file without a total is rejected and nothing is written. Claude asks for missing parts in conversation, and the loader is the backstop. A receipt whose total can't be read is not loaded. This replaces incomplete trips and the "possibly part of trip N" stop from 13.3.
-- **Why.** Incomplete trips caused a duplicate bug. The top half of a long receipt often has no transaction number, no time and no total, so a re-run of it reaches key 3, which compares two NULL totals. If NULL doesn't match NULL, the re-run is stopped as "possibly part of trip N" instead of "already logged", and `--force` would then load a duplicate. With a total on every trip, key 3 never compares NULLs. Dropping incomplete trips also removes a stop outcome, an exit code and a merge step from the loader. Claude alone can't enforce the rule, since judging that a photo is incomplete is a judgment call, so the loader enforces it too.
+- **Decision.** A trip is loaded only once every part of its receipt has been photographed, and all the photos go in one load. `total_cents` is required in the trip JSON and `NOT NULL` in `trips`, so a file without a total is rejected and nothing is written. The user is prompted for missing parts in conversation, and the loader is the backstop. A receipt whose total can't be read is not loaded. This replaces incomplete trips and the "possibly part of trip N" stop from 13.3.
+- **Why.** Incomplete trips caused a duplicate bug. The top half of a long receipt often has no transaction number, no time and no total, so a re-run of it reaches key 3, which compares two NULL totals. If NULL doesn't match NULL, the re-run is stopped as "possibly part of trip N" instead of "already logged", and `--force` would then load a duplicate. With a total on every trip, key 3 never compares NULLs. Dropping incomplete trips also removes a stop outcome, an exit code and a merge step from the loader. The conversation alone can't enforce the rule, since judging that a photo is incomplete is a judgment call, so the loader enforces it too.
 - **Alternatives considered.** Keeping incomplete trips and comparing totals with `IS`, so NULL matches NULL (the fix the loader design review suggested), rejected because loading in parts adds a stop outcome and a merge step that are easy to get wrong, while uploading every photo at once costs little. Allowing a trip with an unreadable total to load with a NULL total and a note, rejected because it brings NULL totals back, and so the same bug; such receipts should be rare, and the photo is still kept.
 - **Consequences.** A long receipt waits until every part is photographed. A missing middle part still loads, since the trip has a total, but the subtotal check flags it with the exact mismatch, and `--update` completes it later. `--update` stays for corrections and retaken photos.
 - **Discussion.** [Issue #14](https://github.com/dknupp/price_tracker/issues/14), from the review of the loader design ([#9](https://github.com/dknupp/price_tracker/issues/9)).

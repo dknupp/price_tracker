@@ -98,7 +98,7 @@ This is a study project, but it helps to imagine real-world use. These are rough
 - **Receipt photos are the real storage cost:** At a few hundred kilobytes each, they add up to around a gigabyte a month. Keep them in object storage such as S3, and store only the path in the database.
 - **Database CPU is modest:** Queries are small joins over one user's own history. A single modest Postgres instance with an index on user and date should handle thousands of users.
 - **Multi-user changes:** Add a user id column to the tables so each person sees only their own data.
-- **Likely bottlenecks:** Claude calls for reading receipts, which are slow and rate limited, so queue them in the background; photo upload and processing bandwidth; and the shared product catalog, if item numbers are pooled across users.
+- **Likely bottlenecks:** model calls for reading receipts, which are slow and rate limited, so queue them in the background; photo upload and processing bandwidth; and the shared product catalog, if item numbers are pooled across users.
 - **Shared catalog caution:** Pooling item numbers between users is valuable but needs rules for wrong or conflicting entries.
 - **Bring-your-own-key effect:** If users supply their own API keys, the Claude cost and rate limits are theirs, so one person's burst can't hurt anyone else.
 
@@ -118,8 +118,8 @@ Add an expiration date column for food items, so each purchase can carry a use-b
 
 - **Capture the printed date:** Record the expiration date read from the package for each food item, either when it's logged or during the post-trip review, since receipts don't print it. This goes in its own "printed expiration" field and stays empty unless someone actually entered it.
 - **Seed an estimate by item type:** Based on what the item is, pre-fill a separate "estimated expiration" date from a typical shelf life, such as a few days for fresh fish and herbs, a couple of weeks for milk, or years for canned goods. The user can confirm or change it. Keeping the estimate in its own field means it is never mistaken for the date printed on the package, and entering a printed date later doesn't erase the estimate.
-- **Example question:** "Which items have I purchased recently that might go bad soon?" Claude would estimate roughly how long each perishable item lasts and fill in the estimate when the trip is loaded.
-- **Open issue from the spec review:** the typical shelf life per item type needs a source, such as a table by category or Claude's own estimate at load time. An estimate stored at load time also goes stale if the item's category is later corrected.
+- **Example question:** "Which items have I purchased recently that might go bad soon?" The answer would rest on a rough estimate of how long each perishable item lasts, filled in when the trip is loaded.
+- **Open issue from the spec review:** the typical shelf life per item type needs a source, such as a table by category or an estimate made at load time. An estimate stored at load time also goes stale if the item's category is later corrected.
 - **Make it optional:** Many items (household goods, deposits, fees) have no expiration date, so the field should be allowed to stay empty, not guessed.
 - **Connect to other features:** The date could feed the recipe suggestions, so items closest to expiring are used first, and the shopping list, so the tool doesn't suggest buying something that's already stocked and still good.
 - **Database change:** Two new nullable date columns on the line items table, `expiration_printed` and `expiration_estimated`, since the dates belong to a specific purchase, not to the product in general. A view returns the printed date when there is one and falls back to the estimate, and also says which of the two it used. That view was drafted in the v1 database spec and then moved back here: this is a v2 feature.
@@ -141,7 +141,7 @@ Save a transcript of every printed line of the receipt, in order and exactly as 
 - **Why:** The trip JSON records only the fields designed so far. A transcript keeps everything else the receipt prints (register and lane numbers, the "items sold" count, survey codes), so a field added later can be pulled from saved transcripts instead of reopening hundreds of photos. It is also searchable and much faster to reread than a photo.
 - **Where it goes:** A `receipt.transcript` field in the trip JSON (a list of printed lines), so it is saved in the receipts folder next to the photo and reloaded by `--update`. It stays out of the database until something needs to query it.
 - **Rules:** Copy each line verbatim, keeping the spacing so the receipt's fixed-width columns stay aligned. Nothing is interpreted or corrected. Lines holding identifiers for people or accounts (card digits, member numbers, names, prescription details) are replaced with `[omitted]`, as in spec 13.6. Unreadable parts are marked, not guessed.
-- **Limits:** A transcript is Claude's reading, not the evidence. A misread in it can only be caught by checking the photo, and barcodes, faded sections and handwriting don't come through. So while the photo is kept, the photo is the record and the transcript is a convenience.
+- **Limits:** A transcript is a reading of the receipt, not the evidence. A misread in it can only be caught by checking the photo, and barcodes, faded sections and handwriting don't come through. So while the photo is kept, the photo is the record and the transcript is a convenience.
 - **Becomes important if photos are deleted:** If photos are ever deleted after a retention period (spec section 12), the transcript is the only remaining record of everything the receipt printed.
 
 ## Open questions
