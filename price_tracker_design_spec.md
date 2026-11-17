@@ -57,7 +57,7 @@ Arguments:
 - `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.5).
 - `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
 - `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.7). It can't be combined with `--force`.
-- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
+- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
 
 ## 5. Outputs
 
@@ -125,7 +125,7 @@ CREATE TABLE trips (
   transaction_no TEXT,                -- first key for detecting re-uploaded receipts (7.1 step 2)
   subtotal_cents     INTEGER,
   tax_cents          INTEGER,
-  total_cents        INTEGER,            -- NULL until the part of the receipt with the total is read (incomplete trip, 7.1 step 2)
+  total_cents        INTEGER NOT NULL,   -- required: a trip is loaded only when its whole receipt has been read (7.7)
   savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
   fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
   receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.5)
@@ -303,8 +303,6 @@ This is display only (feature idea 13): no new stored column, since price, disco
 
    A match is reported as "already logged" with the existing trip's id, and nothing is loaded. `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
 
-   **Incomplete trips.** A trip whose total hasn't been read yet (`total_cents` NULL, for example the top half of a long receipt) is incomplete and has `needs_review = 1`. If a new trip is at the same store on the same date as an incomplete trip, or is itself incomplete and has the same store and date as any existing trip, the loader stops and reports "possibly part of trip N". The user then completes trip N with `--update N` (7.7), or loads the new one as a separate trip with `--force`.
-
    **Near matches.** The keys above need exact values, so a second photo of the same receipt can slip past them if Claude reads it slightly differently (a misread digit, a cropped line). After the keys, the loader compares the new trip with every existing trip at the same store on the same date. It is a near match if either:
    - the totals are equal, or
    - at least 80% of the lines match, counted against whichever trip has more lines. A line matches when it has the same item code (or text, when there is no code) and the same price, and each existing line can match only once.
@@ -366,7 +364,8 @@ Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD`
 |---|---|---|
 | `store.chain`, `store.branch`, `store.store_number`, `store.address` | `chain` only | `stores` (found or created as in 7.1 step 1) |
 | `trip_date`, `trip_time`, `transaction_no` | `trip_date` only | `trips` |
-| `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | no | `trips`. A missing `total_cents` makes the trip incomplete (7.1 step 2). |
+| `total_cents` | yes | `trips`. A file with no total is rejected and nothing is written (7.7). |
+| `subtotal_cents`, `tax_cents`, `savings_cents`, `fsa_total_cents` | no | `trips` |
 | `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
 | `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` (negative). Trip-level promotions only. |
 | `coupons` | no | `coupons`: `description`, `valid_from`, `valid_to` |
@@ -441,7 +440,7 @@ Example (values invented):
 ```
 
 ### 7.7 Updating a trip
-An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a receipt too long for one photo, where a missing part is photographed later; a cut-off or blurry photo that is retaken; or a price Claude misread.
+An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a middle part of a long receipt that was missed and is photographed later; a cut-off or blurry photo that is retaken; or a price Claude misread.
 
 1. Claude writes a complete trip JSON (7.6) for the whole receipt as now read: every line from every photo, not just the new ones.
 2. `load_trip.py --file trip.json --update <trip_id> [--image photo.jpg ...]` replaces the trip in one transaction. The trip's fields are overwritten, and its lines and adjustments are deleted and loaded again from the file as in 7.1 step 4. The trip keeps its `trip_id`. If anything fails, the trip is left exactly as it was.
@@ -453,7 +452,7 @@ An update replaces a loaded trip with a corrected or more complete reading of th
 5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
 6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
 
-A long receipt can be loaded in parts, in any order. A first part with no total loads as an incomplete trip (7.1 step 2). Each later part is stopped as "possibly part of trip N", and Claude then writes the combined JSON and runs `--update N`. The date is still required: a part with no printed date (Costco prints it at the bottom) can't be loaded on its own, and Claude waits for the part with the date rather than assume the upload date.
+**All photos of a trip are loaded together.** A receipt too long for one photo is photographed in parts, and every part is given in one load. If the photos look incomplete (no total, no date, lines cut off), Claude asks for the rest of the receipt, or for a fresh upload with every photo, and writes no JSON until it has them. The loader is the backstop: `trip_date` and `total_cents` are required (7.6), so a file without them is rejected and nothing is written. A receipt whose total can't be read at all (torn, faded) is not loaded; its photo can still be kept. A missing middle part can't be caught this way, since the trip has its total, but its lines won't add up to the subtotal, so the integrity check flags it (7.2) and `--update` completes it once the missing photo is in (13.7).
 
 ## 8. Edge Cases & Error Handling
 
@@ -465,14 +464,14 @@ A long receipt can be loaded in parts, in any order. A first part with no total 
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
 - **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
 - **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
-- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt are added by updating the trip (7.7), and are named as in 7.5.
+- **Unreadable or cut-off receipt photos**: if the date or total is missing, the trip is not loaded until the rest of the receipt is photographed (7.7). Otherwise the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt are added by updating the trip (7.7), and are named as in 7.5.
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
 - **Re-running a load**: must not crash or double-insert.
 
 ## 9. Load Summary
 
 Every load prints:
-- Trip loaded or updated (trip id, store, date, total, or "total not read yet" for an incomplete trip), "already logged" with the existing trip's id, or "possibly part of trip N", or "possibly the same receipt as trip N" (7.1 step 2), so it can be updated (7.7).
+- Trip loaded or updated (trip id, store, date, total), "already logged" with the existing trip's id, or "possibly the same receipt as trip N" (7.1 step 2), so it can be updated (7.7).
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
 - Review questions from 7.3.
@@ -492,7 +491,7 @@ The criteria are tested with made-up trip JSON files committed with the tests, n
 - [ ] A load that fails partway leaves no partial trip in the database.
 - [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
 - [ ] A second reading of an already logged receipt with no transaction number, where one line's price was misread and the time was misread by a minute (so key 2 doesn't match), is stopped as "possibly the same receipt as trip N" and loads only with `--force`.
-- [ ] After the top half of a receipt (no total) is loaded, loading the bottom half as a new trip is stopped as "possibly part of trip N", and `--update N` with the combined JSON completes the trip.
+- [ ] A trip JSON with no total is rejected, and nothing is written to the database or the receipts folder.
 - [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
 - [ ] No card digits, approval codes, membership or loyalty numbers, phone numbers, personal names or prescription numbers appear in the database or in any saved trip JSON (13.6).
@@ -545,6 +544,7 @@ PR = [dknupp/price_tracker#2](https://github.com/dknupp/price_tracker/pull/2), t
 - **Why.** Loading a duplicate double-counts spending and purchases, which is worse than occasionally asking the user to confirm a genuine repeat trip. A transaction number is unique, so a match on it is never overridden. The weaker keys can match two genuinely separate trips, so they need an override. Store, date and total alone was too weak: a misread total misses a real duplicate, and two small trips with the same total match by accident.
 - **Alternatives considered.** Warning and loading anyway (the original draft), rejected because duplicates would silently skew every total. Total as the only fallback key, rejected as above. A hash of the photo file, rejected because a second photo of the same receipt has a different hash.
 - **Consequences.** Re-running a load is safe and adds nothing. A long receipt can be loaded in parts, in any order.
+- **Superseded in part by 13.7**, which removes incomplete trips: a receipt is no longer loaded in parts.
 - **Discussion.** [PR thread on duplicates without a transaction number](https://github.com/dknupp/price_tracker/pull/2#discussion_r4560818910), [PR thread on updating a trip](https://github.com/dknupp/price_tracker/pull/2#discussion_r4560818958).
 
 ### 13.4 Weighed items are converted to base units using the unit printed on the receipt
@@ -567,3 +567,10 @@ PR = [dknupp/price_tracker#2](https://github.com/dknupp/price_tracker/pull/2), t
 - **Alternatives considered.** Keeping `trips.card_last4` to match trips to card statements, rejected because store, date and total usually make that match, and nothing in v1 used it. Using approval codes as a duplicate key, rejected because the keys in 7.1 step 2 are enough.
 - **Consequences.** `card_last4` was removed from the schema and the trip JSON. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.5). Whether to delete photos after a retention period is still undecided.
 - **Discussion.** Settled outside the PR, during the review of this spec (November 2026).
+
+### 13.7 All photos of a trip are loaded together, and every trip has a total
+- **Decision.** A trip is loaded only once every part of its receipt has been photographed, and all the photos go in one load. `total_cents` is required in the trip JSON and `NOT NULL` in `trips`, so a file without a total is rejected and nothing is written. Claude asks for missing parts in conversation, and the loader is the backstop. A receipt whose total can't be read is not loaded. This replaces incomplete trips and the "possibly part of trip N" stop from 13.3.
+- **Why.** Incomplete trips caused a duplicate bug. The top half of a long receipt often has no transaction number, no time and no total, so a re-run of it reaches key 3, which compares two NULL totals. If NULL doesn't match NULL, the re-run is stopped as "possibly part of trip N" instead of "already logged", and `--force` would then load a duplicate. With a total on every trip, key 3 never compares NULLs. Dropping incomplete trips also removes a stop outcome, an exit code and a merge step from the loader. Claude alone can't enforce the rule, since judging that a photo is incomplete is a judgment call, so the loader enforces it too.
+- **Alternatives considered.** Keeping incomplete trips and comparing totals with `IS`, so NULL matches NULL (the fix the loader design review suggested), rejected because loading in parts adds a stop outcome and a merge step that are easy to get wrong, while uploading every photo at once costs little. Allowing a trip with an unreadable total to load with a NULL total and a note, rejected because it brings NULL totals back, and so the same bug; such receipts should be rare, and the photo is still kept.
+- **Consequences.** A long receipt waits until every part is photographed. A missing middle part still loads, since the trip has a total, but the subtotal check flags it with the exact mismatch, and `--update` completes it later. `--update` stays for corrections and retaken photos.
+- **Discussion.** [Issue #14](https://github.com/dknupp/price_tracker/issues/14), from the review of the loader design ([#9](https://github.com/dknupp/price_tracker/issues/9)).
