@@ -1,65 +1,109 @@
-# Receipt Tracker — Database Specification
-
-Oct 30, 2026
-
-Designed from the 16 receipts logged so far in the "Grocery Price Tracker" doc (Safeway, Trader Joe's, Costco, Grocery Outlet; June 25 – Nov 10, 2026).
+# Price Tracker — Design Specification
 
 ## 1. Purpose
 
-Store grocery trips (one receipt = one trip) in a SQL database so that prices can be compared over time and across stores, and so that receipt problems (double charges, price mismatches) can be caught and tracked.
+This project aims to provide a way to track prices for commonly purchased items. (In the first iteration, it's purely retrospective. In future iterations, it may support pricing predictions by scraping prices from store websites.)
 
-The database replaces the table-per-trip layout of the current doc. The doc was good for getting started, but it can't answer questions like "what is my cost per can of tuna across all stores?" without re-reading every table by hand.
+The user submits photographs of grocery receipts (one receipt = one trip) so the data can be parsed and stored in a SQL database, allowing prices and trends per product to be compared over time and across stores. A secondary benefit is that receipt problems (double charges, price mismatches) can be caught and tracked.
 
-Questions the database must be able to answer:
+Receipt photos can be uploaded from a phone before even leaving the store.
+
+Sample questions the database must be able to answer:
 
 - What did I pay per unit (can, roll, ounce, pound) for a product at each store, over time?
 - Which products do I buy most often?
-- Did any receipt charge me for the same item twice?
 - How much did I spend in a month, per store, per category?
-- What FSA-eligible items did I buy, and what is the FSA total including tax?
-- Does the receipt price match the shelf price I photographed?
+- Given a shopping list of items, how could I maximize savings (whether constrained to one store or willing to stop at multiple stores)?
 
 ## 2. Background & Design Principles
 
-- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and the reports show "N/A". It never stores a guess.
-- **Money is stored as integer cents.** This avoids floating-point rounding errors. Earlier hand arithmetic on this project produced a $1.00 addition error and a wrong "You Paid" value, so totals are checked by code, not by eye.
+- **Accuracy outranks convenience.** Every trip must be traceable to a saved photo of the receipt. When a value is unknown (pack size, weight), the database stores NULL and answers show "?" (not yet known, as opposed to not applicable). It never stores a guess.
+- **Money is stored as integer cents.** This avoids floating-point rounding errors.
 - **Receipt text is not the product.** Receipts print abbreviations ("KS ALBACORE", "PE GRANOLA", "TF Sld Chp Thai Chil"). A mapping table connects each store's receipt text and item code to one canonical product, so the same product can be compared across stores.
 - **The original receipt text is never overwritten.** Every line keeps the text exactly as the receipt printed it (`line_items.raw_text`), separate from anything learned later such as brand, size, or grade. Cleaning up or correcting product details never changes the original string, so any line can be checked against its receipt photo.
 - **Unit prices are derived, not stored.** They are computed from price paid, pack count, and unit size. Correcting a pack size fixes every trip at once.
-- **Discounts are kept separate from price.** Price, discount, and amount paid are all stored, so the original shelf price and the markdown stay visible (for example, the Costco chili at $18.79, marked down $4.80).
+- **Everything the receipt prints is recorded.** A printed value is stored even when v1 doesn't use it yet (for example, a line's FSA mark), because it can't be recovered later without the photo. Values the receipt doesn't print are never filled in.
+- **Identifiers for people and accounts are never stored.** The one exception to the rule above: the database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. They aren't needed to compare prices, and leaving them out reduces the sensitive data the tool keeps (13.6).
+- **Discounts are kept separate from price.** In addition to the amount paid, the regular price and any discount are stored, if known, for each item on a given receipt.
 
 ## 3. Technology
 
 - **Language:** Python 3.
 - **Database:** SQLite via the standard library `sqlite3` module, one file (`receipts.db`). The schema uses plain SQL, so it ports to PostgreSQL later.
-- **CLI argument parsing:** `argparse`.
-- **Exports:** standard library `csv` and `json`.
 
-No new dependencies. Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
+**PostgreSQL portability.** The schema avoids SQLite-only features except two, which need a one-line change when porting:
+- `PRAGMA foreign_keys = ON` is SQLite-only. PostgreSQL always enforces foreign keys, so the line is dropped.
+- `INTEGER PRIMARY KEY` assigns ids automatically in SQLite. In PostgreSQL it becomes `INTEGER GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY`.
+
+Everything else (`CHECK` constraints, expression indexes, and partial indexes with `WHERE`) works unchanged in both.
+
+**Dependencies.** Well-known third-party packages may be used where they make the code simpler or more reliable. They are installed in the project's virtual environment (`.venv/`, kept out of git) and listed in `requirements.txt`, so the environment can be rebuilt. The standard library already covers SQLite, JSON and command-line arguments, so v1 may need few; `pytest` for the acceptance tests is a likely one.
+
+Receipt reading (photo to line items) is done by Claude in conversation for v1, not by code in this project.
 
 ## 4. Inputs
 
 ### Loader (`load_trip.py`)
-- `--file` (required): path to a trip JSON file (same structure as the `trips` and `line_items` tables below).
+Loads one receipt into the database, or replaces a trip already there. It is the only way a trip enters or changes in the database, so every trip goes through the same checks.
+- **Why it's needed:** Claude reads the receipt photo, but writing rows with ad hoc SQL would skip the duplicate-trip and integrity checks (7.1, 7.2) and could leave a half-loaded trip. The loader writes the trip and its lines in one transaction, works out derived values itself (such as `paid_cents` and `needs_review`), and files the photos and the trip JSON in the receipts folder.
+- **Invoked by:** Claude, in the conversation where the user uploads a receipt photo. Claude writes the trip JSON from the photo, then runs the loader. The user can also run it by hand.
+- **Consumers:** the database, which Claude queries to answer questions (section 5). The load summary is read by Claude, which relays it and asks the review questions (7.3) in the conversation.
+- **Input:** one trip JSON file (7.6), and optionally the receipt photos.
+- **Output:** a new or replaced trip in the database; copies of the photos and the trip JSON in the receipts folder (7.5); the load summary on standard output (section 9).
+
+Arguments:
+- `--file` (required): path to a trip JSON file in the format defined in 7.6.
 - `--db` (optional): database path. Defaults to `receipts.db`.
-- `--image` (optional): path to the receipt photo, stored with the trip.
-
-### Bulk import (`import_doc.py`)
-- `--markdown` (required): path to an export of the existing "Grocery Price Tracker" doc, used once to seed the database with all trips already logged.
-
-### Reports (`report.py`)
-- `--unit-prices <product>`: price per unit over time, by store.
-- `--frequent [N]`: most frequently purchased products.
-- `--fsa [--year YYYY]`: FSA-eligible lines with tax, by trip.
-- `--duplicates`: lines flagged as suspected duplicates.
+- `--image` (optional, repeatable): path to a receipt photo. The loader copies it into the receipts folder (7.5).
+- `--receipts-dir` (optional): root folder for receipt photos and trip JSON files. Defaults to `receipts/` next to the database; it can point to a configurable root folder, for example in iCloud Drive.
+- `--update <trip_id>` (optional): replace an existing trip with the contents of `--file`, keeping its id (7.7). It can't be combined with `--force`.
+- `--force` (optional): load a trip that matches an existing one by store, date and time, or by store, date, total and lines, or that may be part of an incomplete trip, or that is a near match (7.1 step 2). It never overrides a matching transaction number.
 
 ## 5. Outputs
 
 - A SQLite database file.
 - Load summary on every run (see section 9).
-- CSV or JSON from any report on request.
+- Answers to questions, from SQL that Claude runs against the database in conversation. There is no separate report program. Logic that is easy to get subtly wrong (unit conversion, comparing only like units) lives in the views in section 6, so every answer applies the same rules. The views can also be queried directly with `sqlite3`.
 
 ## 6. Schema
+
+### Overview
+
+Nine tables and two views. Money columns end in `_cents` (13.1), and NULL means "not yet known" (section 2).
+
+**Tables**
+
+| Table | One row is | Links to | Notes |
+|---|---|---|---|
+| `stores` | a store location | | Found or created by chain and store number (7.1 step 1). |
+| `trips` | one receipt, one shopping trip | `stores` | Printed totals, date, time and transaction number; `needs_review` flags a trip that needs the user's attention. |
+| `line_items` | one printed line: an item, deposit or fee | `trips`, `store_items` | Exact printed text, price, discount and amount paid; weight and unit for by-weight items. |
+| `store_items` | one item as a particular store identifies it | `stores`, `products` | Keyed by item code, or by printed text when the store prints no codes. `product_id` is NULL until the item is identified. |
+| `products` | a canonical product, the same across stores | `unit_conversions` | Brand, name, category, pack count and size, organic and FSA status. Corrections go here and apply to every trip. |
+| `unit_conversions` | a unit of measure | | Converts each unit to a base unit (g, mL or ct). Fixed seed data. |
+| `trip_adjustments` | a trip-level promotion, such as $5 off $25 | `trips` | Always a negative amount. |
+| `coupons` | a coupon printed on a receipt | `trips`, `stores` | Expiry dates, and the trip it was used on, if any. |
+| `disputes` | a problem the user raised about a line, such as a double charge | `line_items` | Amount and status (open, refunded, denied). |
+
+**Views**
+
+| View | Shows | Notes |
+|---|---|---|
+| `v_unit_price` | each item line's price per pack unit, per measure unit and per base unit | The only place unit prices are computed (they are never stored). Leaves out lines whose product isn't identified yet. |
+| `v_markdown` | each discounted line's regular price, markdown and percent off | Display only. |
+
+**How a receipt line reaches a product.** This chain is what makes comparison across stores possible:
+
+```
+stores ──< trips ──< line_items >── store_items >── products >── unit_conversions
+stores ──< store_items
+```
+
+Read `A ──< B` as "one A has many B", and `A >── B` as "many A belong to one B". Adjustments, coupons and disputes hang off `trips` and `line_items` and are left out of the diagram.
+
+A store's receipt text or item code (`store_items`) maps to one canonical product, so the same product bought at different stores, or printed differently on different days, compares directly.
+
+### Tables
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -67,27 +111,28 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE stores (
   store_id      INTEGER PRIMARY KEY,
   chain         TEXT NOT NULL,        -- Safeway, Trader Joe's, Costco, Grocery Outlet
-  branch        TEXT,                 -- Lake Merritt, San Leandro
-  store_number  TEXT,                 -- 3132, 0203, 118, 624
-  address       TEXT,
-  UNIQUE (chain, store_number)
+  branch        TEXT,                 -- neighborhood or city name, if printed
+  store_number  TEXT,                 -- as printed, for example 0042
+  address       TEXT
 );
+CREATE UNIQUE INDEX ux_stores ON stores (chain, COALESCE(store_number, ''));
 
 CREATE TABLE trips (
   trip_id        INTEGER PRIMARY KEY,
   store_id       INTEGER NOT NULL REFERENCES stores,
   trip_date      TEXT NOT NULL,       -- ISO 8601 date
   trip_time      TEXT,
-  transaction_no TEXT,                -- used to reject re-uploaded receipts
-  subtotal_c     INTEGER,
-  tax_c          INTEGER,
-  total_c        INTEGER NOT NULL,
-  savings_c      INTEGER,
-  card_last4     TEXT,
-  receipt_image  TEXT,                -- path to the receipt photo
-  needs_review   INTEGER NOT NULL DEFAULT 0,
+  transaction_no TEXT,                -- first key for detecting re-uploaded receipts (7.1 step 2)
+  subtotal_cents     INTEGER,
+  tax_cents          INTEGER,
+  total_cents        INTEGER,            -- NULL until the part of the receipt with the total is read (incomplete trip, 7.1 step 2)
+  savings_cents      INTEGER,            -- "you saved" total as printed; informational, never used in checks (7.2)
+  fsa_total_cents    INTEGER,            -- FSA total as printed (tax included); NULL when not printed
+  receipt_image  TEXT,                -- receipt photo, relative to the receipts folder (7.5)
+  trip_json      TEXT,                -- saved trip JSON, relative to the receipts folder (7.5)
+  needs_review   INTEGER NOT NULL DEFAULT 0 CHECK (needs_review IN (0,1)),
   notes          TEXT,
-  UNIQUE (store_id, transaction_no)
+  UNIQUE (store_id, transaction_no)   -- trips with no transaction_no never conflict here; see 7.1 step 2
 );
 
 CREATE TABLE unit_conversions (
@@ -108,20 +153,26 @@ CREATE TABLE products (
   pack_count    INTEGER,              -- 8 cans, 10 packs; NULL if unknown
   unit_size     REAL,                 -- 15, 17, 16; NULL if unknown
   unit_measure  TEXT REFERENCES unit_conversions,  -- oz, fl oz, g, kg, lb, mL, L, ct, dozen; NULL if unknown
-  sold_by_weight INTEGER NOT NULL DEFAULT 0,
-  is_fsa        INTEGER NOT NULL DEFAULT 0,
-  is_organic    INTEGER CHECK (is_organic IN (0,1)),  -- 1 organic, 0 not organic, NULL unknown (never guessed)
-  UNIQUE (brand, name, pack_count, unit_size, unit_measure, is_organic)
+  sold_by_weight INTEGER NOT NULL DEFAULT 0 CHECK (sold_by_weight IN (0,1)),
+  is_fsa        INTEGER CHECK (is_fsa IN (0,1)),      -- 1 eligible, 0 not eligible, NULL unknown (7.4)
+  is_organic    INTEGER CHECK (is_organic IN (0,1))   -- 1 organic, 0 not organic, NULL unknown (never guessed)
+);
+CREATE UNIQUE INDEX ux_products ON products (
+  COALESCE(brand, ''), name, COALESCE(pack_count, -1), COALESCE(unit_size, -1),
+  COALESCE(unit_measure, ''), COALESCE(is_organic, -1)
 );
 
 CREATE TABLE store_items (
   store_item_id INTEGER PRIMARY KEY,
   store_id      INTEGER NOT NULL REFERENCES stores,
   item_code     TEXT,                 -- may be NULL (Trader Joe's prints none)
-  receipt_text  TEXT NOT NULL,        -- text as first printed for this code (each line keeps its own copy in line_items.raw_text)
-  product_id    INTEGER REFERENCES products,   -- NULL until identified
-  UNIQUE (store_id, item_code, receipt_text)
+  receipt_text  TEXT NOT NULL,        -- with a code: text as first printed for it; without one: the identifier
+                                      -- (each line keeps its own copy in line_items.raw_text)
+  product_id    INTEGER REFERENCES products    -- NULL until identified
 );
+-- A printed item code identifies the item; the text is the identifier only when there is no code.
+CREATE UNIQUE INDEX ux_store_items_code ON store_items (store_id, item_code)    WHERE item_code IS NOT NULL;
+CREATE UNIQUE INDEX ux_store_items_text ON store_items (store_id, receipt_text) WHERE item_code IS NULL;
 
 CREATE TABLE line_items (
   line_id        INTEGER PRIMARY KEY,
@@ -131,27 +182,25 @@ CREATE TABLE line_items (
   raw_text       TEXT NOT NULL,       -- this line exactly as printed on the receipt; never edited
   raw_discount_text TEXT,             -- printed discount line folded into this item, exactly as printed
   line_type      TEXT NOT NULL DEFAULT 'item'
-                 CHECK (line_type IN ('item','deposit','bag_fee','discount')),
+                 CHECK (line_type IN ('item','deposit','bag_fee')),
   quantity       REAL NOT NULL DEFAULT 1,
-  weight         REAL,                -- for by-weight items
-  weight_unit    TEXT,
-  price_c        INTEGER NOT NULL,    -- before discount
-  discount_c     INTEGER NOT NULL DEFAULT 0,
-  paid_c         INTEGER NOT NULL,
-  is_taxable     INTEGER,
-  is_fsa         INTEGER NOT NULL DEFAULT 0,
-  suspected_duplicate INTEGER NOT NULL DEFAULT 0,
-  expiration_printed   TEXT,          -- ISO date read from the package; NULL unless actually entered
-  expiration_estimated TEXT,          -- ISO date seeded from typical shelf life; NULL for non-food
-  CHECK (paid_c = price_c - discount_c),
+  weight         REAL CHECK (weight > 0),   -- for by-weight items, as printed
+  weight_unit    TEXT REFERENCES unit_conversions,   -- lb, kg, oz as printed; required when weight is given
+  price_cents        INTEGER NOT NULL,    -- before discount
+  discount_cents     INTEGER NOT NULL DEFAULT 0,
+  paid_cents         INTEGER NOT NULL,
+  is_taxable     INTEGER CHECK (is_taxable IN (0,1)),   -- NULL unknown
+  fsa_marked     INTEGER NOT NULL DEFAULT 0 CHECK (fsa_marked IN (0,1)),   -- receipt printed an FSA mark on this line
+  CHECK (paid_cents = price_cents - discount_cents),   -- the loader computes paid_cents, so this never fails a load (7.2)
+  CHECK ((weight IS NULL) = (weight_unit IS NULL)),
   UNIQUE (trip_id, line_no)
 );
 
 CREATE TABLE trip_adjustments (
   adj_id     INTEGER PRIMARY KEY,
   trip_id    INTEGER NOT NULL REFERENCES trips ON DELETE CASCADE,
-  kind       TEXT NOT NULL,           -- member savings, For U, $5 off $25, instant savings
-  amount_c   INTEGER NOT NULL
+  kind       TEXT NOT NULL,           -- trip-level promotions only, such as $5 off $25
+  amount_cents   INTEGER NOT NULL CHECK (amount_cents < 0)   -- money off the trip, so always negative
 );
 
 CREATE TABLE coupons (
@@ -167,21 +216,12 @@ CREATE TABLE coupons (
 CREATE TABLE disputes (
   dispute_id  INTEGER PRIMARY KEY,
   line_id     INTEGER NOT NULL REFERENCES line_items,
-  reason      TEXT NOT NULL,          -- double charge, wrong price
-  amount_c    INTEGER NOT NULL,
+  reason      TEXT NOT NULL,          -- double charge, wrong price (entered by the user when they notice one)
+  amount_cents    INTEGER NOT NULL,
   status      TEXT NOT NULL DEFAULT 'open'
               CHECK (status IN ('open','refunded','denied')),
   opened_on   TEXT NOT NULL,
   resolved_on TEXT
-);
-
-CREATE TABLE shelf_prices (
-  shelf_id      INTEGER PRIMARY KEY,
-  store_id      INTEGER NOT NULL REFERENCES stores,
-  product_id    INTEGER REFERENCES products,
-  shelf_price_c INTEGER NOT NULL,
-  photo_path    TEXT,
-  seen_at       TEXT NOT NULL
 );
 
 CREATE INDEX idx_trips_date        ON trips (trip_date);
@@ -190,59 +230,49 @@ CREATE INDEX idx_lines_store_item  ON line_items (store_item_id);
 CREATE INDEX idx_store_items_prod  ON store_items (product_id);
 ```
 
+**Uniqueness with optional columns.** SQL never treats two NULLs as equal in a `UNIQUE` constraint, so a plain `UNIQUE` over a column that may be NULL would let a re-run insert duplicate stores, products or Trader Joe's items. The unique indexes above therefore either map NULL to a placeholder with `COALESCE` or split the rule with a partial index. The loader's find-or-create lookups must match NULL to NULL the same way (`IS`, not `=`).
+
 ### Derived view: unit price
 
 ```sql
 CREATE VIEW v_unit_price AS
 SELECT
   l.line_id, t.trip_date, s.chain, p.brand, p.name,
-  l.paid_c,
+  l.paid_cents,
+  -- Packaged items: per pack unit (can, roll) and per the product's unit_measure.
+  -- By-weight items: no pack unit; the measure is the weight unit the receipt printed.
   CASE
-    WHEN p.sold_by_weight = 1 AND l.weight IS NULL THEN NULL
-    WHEN p.sold_by_weight = 1 THEN l.paid_c / l.weight
-    WHEN p.pack_count IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count)
+    WHEN p.sold_by_weight = 1 OR p.pack_count IS NULL THEN NULL
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count)
   END AS cents_per_pack_unit,
   CASE
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_cents / l.weight
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size)
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count * p.unit_size)
   END AS cents_per_measure_unit,
-  u.base_unit,
+  CASE WHEN p.sold_by_weight = 1 THEN l.weight_unit ELSE p.unit_measure END AS measure_unit,
+  CASE WHEN p.sold_by_weight = 1 THEN uw.base_unit  ELSE u.base_unit    END AS base_unit,
   CASE
+    WHEN p.sold_by_weight = 1 THEN 1.0 * l.paid_cents / (l.weight * uw.factor)
     WHEN p.pack_count IS NULL OR p.unit_size IS NULL OR u.factor IS NULL THEN NULL
-    ELSE 1.0 * l.paid_c / (l.quantity * p.pack_count * p.unit_size * u.factor)
+    ELSE 1.0 * l.paid_cents / (l.quantity * p.pack_count * p.unit_size * u.factor)
   END AS cents_per_base_unit   -- per g, mL or ct; multiply by 453.592 for per lb, 28.3495 for per oz
+  -- Any unknown input (weight, pack count, unit size) makes the result NULL, shown as "?".
 FROM line_items l
 JOIN trips t        ON t.trip_id = l.trip_id
 JOIN stores s       ON s.store_id = t.store_id
 JOIN store_items si ON si.store_item_id = l.store_item_id
 JOIN products p     ON p.product_id = si.product_id
-LEFT JOIN unit_conversions u ON u.unit = p.unit_measure
+LEFT JOIN unit_conversions u  ON u.unit  = p.unit_measure
+LEFT JOIN unit_conversions uw ON uw.unit = l.weight_unit
 WHERE l.line_type = 'item';
 ```
 
-Reports display NULL as "N/A". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
+By-weight items compare across stores the same way as packaged ones: grapes bought at 2.5 lb for $4.98 and at 1.2 kg for $5.28 both come out in cents per gram (0.439¢ and 0.440¢, or about $1.99 and $2.00 per lb), whatever unit each receipt printed. A by-weight line with no printed weight shows "?" in every unit-price column.
 
-### Derived view: expiration
+Answers display NULL as "?". Comparisons across products use `cents_per_base_unit` and only compare rows with the same `base_unit`, so a 4 x 4 oz butter and a 1 lb butter compare correctly, and grams are never compared to millilitres.
 
-```sql
-CREATE VIEW v_expiration AS
-SELECT
-  l.line_id, t.trip_date, p.brand, p.name,
-  l.expiration_printed,
-  l.expiration_estimated,
-  COALESCE(l.expiration_printed, l.expiration_estimated) AS expiration_used,
-  CASE
-    WHEN l.expiration_printed IS NOT NULL THEN 'printed'
-    WHEN l.expiration_estimated IS NOT NULL THEN 'estimated'
-    ELSE NULL
-  END AS expiration_source
-FROM line_items l
-JOIN trips t             ON t.trip_id = l.trip_id
-LEFT JOIN store_items si ON si.store_item_id = l.store_item_id
-LEFT JOIN products p     ON p.product_id = si.product_id
-WHERE l.line_type = 'item';
-```
+Lines whose product isn't identified yet (`store_items.product_id` NULL) are left out of the view, since they have no product to compare against. Their trips already have `needs_review = 1`, and the lines appear in the view once they are identified, with no reload. When Claude answers a unit-price question, it says how many such lines exist, so an answer never looks more complete than it is.
 
 ### Derived view: markdown
 
@@ -250,14 +280,14 @@ WHERE l.line_type = 'item';
 CREATE VIEW v_markdown AS
 SELECT
   l.line_id, t.trip_date, s.chain, l.raw_text,
-  l.price_c        AS regular_price_c,
-  l.discount_c     AS markdown_c,
-  l.paid_c,
-  ROUND(100.0 * l.discount_c / l.price_c, 1) AS percent_off
+  l.price_cents        AS regular_price_cents,
+  l.discount_cents     AS markdown_cents,
+  l.paid_cents,
+  ROUND(100.0 * l.discount_cents / l.price_cents, 1) AS percent_off
 FROM line_items l
 JOIN trips t  ON t.trip_id = l.trip_id
 JOIN stores s ON s.store_id = t.store_id
-WHERE l.line_type = 'item' AND l.discount_c > 0 AND l.price_c > 0;
+WHERE l.line_type = 'item' AND l.discount_cents > 0 AND l.price_cents > 0;
 ```
 
 This is display only (feature idea 13): no new stored column, since price, discount and amount paid are already separate.
@@ -265,99 +295,275 @@ This is display only (feature idea 13): no new stored column, since price, disco
 ## 7. Behavior
 
 ### 7.1 Loading a trip
-1. Find or create the store (by chain and store number).
-2. If the trip's `(store_id, transaction_no)` already exists, reject it and report "already logged" (the duplicate Aug 11 upload would have been caught this way). If there is no transaction number, warn when a trip with the same store, date, and total already exists.
+1. Find or create the store (by chain and store number; a missing store number matches a missing one).
+2. Check whether the trip is already logged, using the first key the receipt supports:
+   1. `(store_id, transaction_no)`, when a transaction number is printed.
+   2. Store, date and time, when there is no transaction number but a time is printed.
+   3. Store, date and total, plus the same lines (the ordered list of item code, or text when there is no code, with price), when neither is printed.
+
+   A match is reported as "already logged" with the existing trip's id, and nothing is loaded. `--force` loads it anyway when the match was on key 2 or 3, for the rare case of two genuinely identical trips. It never overrides key 1.
+
+   **Incomplete trips.** A trip whose total hasn't been read yet (`total_cents` NULL, for example the top half of a long receipt) is incomplete and has `needs_review = 1`. If a new trip is at the same store on the same date as an incomplete trip, or is itself incomplete and has the same store and date as any existing trip, the loader stops and reports "possibly part of trip N". The user then completes trip N with `--update N` (7.7), or loads the new one as a separate trip with `--force`.
+
+   **Near matches.** The keys above need exact values, so a second photo of the same receipt can slip past them if Claude reads it slightly differently (a misread digit, a cropped line). After the keys, the loader compares the new trip with every existing trip at the same store on the same date. It is a near match if either:
+   - the totals are equal, or
+   - at least 80% of the lines match, counted against whichever trip has more lines. A line matches when it has the same item code (or text, when there is no code) and the same price, and each existing line can match only once.
+
+   Two trips are never a near match when both print a transaction number and the numbers differ, or both print a time and the times are more than 10 minutes apart. A near match stops the load with "possibly the same receipt as trip N". The user then loads it anyway with `--force`, or uses `--update N` if the new reading is the better one (7.7).
 3. Insert the trip and its lines in one transaction. If anything fails, nothing is written.
-4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row from the item code and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
+4. For each line, save the exact printed text in `line_items.raw_text`, then find or create the `store_items` row: by store and item code when the receipt prints a code, otherwise by store and printed text. Link it to a product if one is known; otherwise leave `product_id` NULL and mark the trip `needs_review`. Later corrections change the `products` row, never `raw_text`.
 5. Run the integrity checks in 7.2.
 6. Print the load summary (section 9).
 
 ### 7.2 Integrity checks (run on every load)
-- Sum of `paid_c` for all lines plus trip adjustments must equal `subtotal_c` (when the receipt prints one).
-- `subtotal_c + tax_c` must equal `total_c`.
-- Each line must satisfy `paid_c = price_c - discount_c`.
+- Sum of `paid_cents` for all lines plus trip adjustments must equal `subtotal_cents` (when the receipt prints one). Adjustments are negative, so adding them subtracts the promotion.
+- `savings_cents` is not part of any check. It repeats savings already counted in each line's `discount_cents` or in the adjustments, so using it as well would count them twice.
+- `subtotal_cents + tax_cents` must equal `total_cents` (once the total has been read).
+- The loader computes each line's `paid_cents` as `price_cents - discount_cents`; it is never taken from the input. When the receipt also prints the amount paid for a line and it differs from that result, the line is stored with the computed value and the mismatch is flagged as described next.
 - Failures do not abort the load. The trip is saved with `needs_review = 1` and the exact mismatch is printed, for example "lines sum to $86.57, receipt subtotal is $87.57".
 
-### 7.3 Duplicate-line check (run on every load)
-Within one trip, flag a line as `suspected_duplicate` when another line has the same item code (or same receipt text when no code) and the same price. Flagged lines are listed in the load summary with a prompt to check the quantity. Example: the Kirkland albacore tuna charged twice on Oct 30, 2026 when only one 8-pack was bought.
-
-A flagged line is only a suspicion. The user can confirm it (create a dispute) or clear it (two really were bought).
-
-### 7.4 Post-load review prompts
+### 7.3 Post-load review prompts
 After a load, the tool lists questions for the user instead of guessing:
 - Products with no brand and no obvious brand in the receipt text (for example "Chili with beans" or "Canned chicken").
 - Products with no pack size or unit size, especially Costco items, since Costco prints no pack sizes.
 - Abbreviations the tool expanded on its own (for example "PE" to Purely Elizabeth), for confirmation.
-- Items that look FSA-eligible but weren't marked as FSA on the receipt.
 
 Answers update the `products` row, which fixes every past and future trip that uses it.
 
-### 7.5 FSA handling
-- Lines the receipt marks as FSA are stored with `is_fsa = 1`.
-- A product can also be marked FSA-eligible once, so later receipts flag it automatically.
-- The FSA report lists each FSA line with its share of tax, per trip. For example, the Oct 30, 2026 Costco ibuprofen: $10.99 plus $1.18 tax, $12.17 total.
+### 7.4 FSA handling
+v1 only records what receipts print about FSA. Reports, computed totals and review prompts are left for their own design (feature idea 4).
+- A line the receipt marks as FSA-eligible is stored with `fsa_marked = 1`; every other line has 0, meaning "not marked", not "not eligible".
+- An FSA total printed on the receipt is stored in `trips.fsa_total_cents` as printed, tax included. For example, a receipt with one FSA-eligible item at $10.99 and $1.18 tax on it prints an FSA total of $12.17. It is not checked against the lines.
+- `products.is_fsa` collects what the marks show across trips and stores. It starts NULL (unknown). It is set to 1 when an FSA-marked line is linked to the product, at load or when the line is identified later. Only the user sets it to 0; a missing mark never does. Nothing in v1 reads it.
 
-### 7.5a Expiration dates
-- Receipts never print expiration dates, so `expiration_printed` is filled in only when the user enters the date from the package, usually during the post-load review. It is never guessed.
-- `expiration_estimated` is seeded from the product's category using a typical shelf life (for example, a few days for fresh fish and herbs, about two weeks for milk, years for canned goods), counted from the trip date. Non-food lines and categories with no known shelf life leave it NULL.
-- Entering a printed date never overwrites or clears the estimate, so both values stay visible.
-- Reports and recipe suggestions use a view that returns the printed date when present and otherwise the estimate, plus a column saying which one was used ("printed" or "estimated").
+### 7.5 Receipt photos and trip files
+- Receipt photos and the trip JSON that Claude writes from them are kept in one receipts folder, a configurable root folder (for example in iCloud Drive, so photos taken on a phone reach the computer without manual copying). `--receipts-dir` sets it.
+- Files are grouped by year and share a base name: `2026/2026-10-30_costco_<txn>.jpg` and `2026/2026-10-30_costco_<txn>.json`. Without a transaction number, the trip time stands in (`..._costco_1432`), and without either, the trip id (`..._costco_t57`). Extra photos of the same receipt get a suffix (`..._2.jpg`).
+- The loader copies files into the folder and never moves or deletes the originals. Copies are made as part of the load: if the database transaction fails, the copies are removed, and a trip rejected as "already logged" copies nothing.
+- The database stores paths relative to the receipts folder, so the folder can be moved or synced without changing any rows.
+- The trip JSON is the loader's input format: the contract between Claude, which reads the photo, and the loader, which enforces the rules in 7.1–7.2. Claude never writes to the database directly. The JSON holds what the receipt says, naming the store by chain and store number and each line by item code and printed text. It holds no database ids and no values the loader computes (such as `needs_review` or `paid_cents`).
+- Saving the JSON is for checking and reloading: it records exactly what Claude read, so it can be compared with the photo, and trips can be loaded again after a loader fix or a schema change. It is not a full backup. Answers from the post-load review (brands, pack sizes, which product a receipt line is) live only in `products` and `store_items`, so `receipts.db` must still be backed up.
+- The receipts folder is never committed to git (it belongs in `.gitignore`), because receipts show card digits and where the user shops. It is backed up together with `receipts.db`.
 
-### 7.6 Import of the existing doc
-`import_doc.py` reads the exported markdown, creates one trip per dated section, and one line per table row. Because the doc has no transaction numbers, duplicate detection uses store, date, and total. Pack sizes already confirmed in the doc (for example, 8 cans of Kirkland albacore, 15 oz Stagg chili, 17 g Kirkland seaweed packs) are loaded into `products`.
+### 7.6 Trip JSON format
+The file has two sections, so what was read stays apart from what was inferred:
+- **`receipt`** holds only what the receipt prints, copied exactly. It is the part to check against the photo. A value that isn't printed is `null`, never filled in.
+- **`interpretation`** holds what Claude believes beyond the printed text: expanded abbreviations, brand, pack size, category. Every value there is a proposal for the user to confirm, never a fact.
+
+Money is in integer cents throughout, as in the database. Dates are `YYYY-MM-DD` and times are `HH:MM`. The file holds no database ids and no values the loader computes (7.5). It also holds none of the identifiers listed in section 2 (card digits, member numbers, names, prescription numbers and so on), even when the receipt prints them.
+
+**Top level**
+
+| Field | Required | Meaning |
+|---|---|---|
+| `format_version` | yes | `1`. The loader rejects versions it doesn't know. |
+| `receipt` | yes | Printed values, below. |
+| `interpretation` | yes | Proposed product details, below. May have no lines. |
+
+**`receipt`**
+
+| Field | Required | Maps to |
+|---|---|---|
+| `store.chain`, `store.branch`, `store.store_number`, `store.address` | `chain` only | `stores` (found or created as in 7.1 step 1) |
+| `trip_date`, `trip_time`, `transaction_no` | `trip_date` only | `trips` |
+| `subtotal_cents`, `tax_cents`, `total_cents`, `savings_cents`, `fsa_total_cents` | no | `trips`. A missing `total_cents` makes the trip incomplete (7.1 step 2). |
+| `lines` | yes | `line_items`, one entry per printed item, deposit or fee |
+| `adjustments` | no | `trip_adjustments`: `kind`, `amount_cents` (negative). Trip-level promotions only. |
+| `coupons` | no | `coupons`: `description`, `valid_from`, `valid_to` |
+| `unreadable` | no | Short notes on parts of the photo that can't be read. Any entry sets `needs_review = 1` and is copied into `trips.notes` (section 8). |
+
+Each entry in `receipt.lines`:
+
+| Field | Required | Maps to |
+|---|---|---|
+| `line_no` | yes | `line_no`, in printed order starting at 1 |
+| `line_type` | no | `item` (default), `deposit` or `bag_fee` |
+| `item_code` | no | `store_items.item_code`; `null` when none is printed |
+| `raw_text` | yes | `raw_text`, exactly as printed |
+| `quantity` | no | `quantity`, default 1 |
+| `weight`, `weight_unit` | together | `weight`, `weight_unit`, as printed |
+| `price_cents` | yes | `price_cents`, before discount |
+| `discount_cents`, `raw_discount_text` | no | Printed discount lines folded into this item (section 8); default 0 and `null` |
+| `printed_paid_cents` | no | Not stored. Only when the receipt prints a paid amount for the line; the loader compares it with its own `paid_cents` (7.2). |
+| `taxable_mark` | no | `is_taxable`: `true`/`false` from the receipt's tax mark, `null` when the receipt shows no marks |
+| `fsa_mark` | no | `fsa_marked`, from the receipt's FSA mark (7.4); default `false` |
+
+**`interpretation`**
+
+| Field | Meaning |
+|---|---|
+| `lines` | One entry per `receipt.lines` entry Claude has a proposal for, matched by `line_no`. Fields: `brand`, `name`, `category`, `pack_count`, `unit_size`, `unit_measure`, `sold_by_weight`, `is_organic`, and `basis` (where the values came from, such as "matches known product" or "expanded KS = Kirkland Signature"). |
+| `notes` | Free text, copied into `trips.notes`. |
+
+How the loader uses `interpretation`:
+- If a line's code or text already maps to a product (7.1 step 4), the existing product wins and the proposal is ignored.
+- Otherwise the loader creates the product from the proposal and lists each proposed value in the post-load review (7.3). A line with no proposal, or no `name`, is left unidentified (`product_id` NULL).
+- `null` means unknown, as everywhere else. Claude leaves a value `null` rather than guess it.
+
+Example (values invented):
+
+```json
+{
+  "format_version": 1,
+  "receipt": {
+    "store": { "chain": "Costco", "branch": "Springfield", "store_number": "0042", "address": null },
+    "trip_date": "2026-10-30",
+    "trip_time": "14:32",
+    "transaction_no": "0042-04-2231",
+    "subtotal_cents": 2698,
+    "tax_cents": 118,
+    "total_cents": 2816,
+    "savings_cents": 300,
+    "fsa_total_cents": 1217,
+    "lines": [
+      { "line_no": 1, "item_code": "1159374", "raw_text": "KS ALBACORE", "price_cents": 1899,
+        "discount_cents": 300, "raw_discount_text": "/1159374 -3.00", "taxable_mark": false },
+      { "line_no": 2, "item_code": "1287620", "raw_text": "KS IBUPROFEN", "price_cents": 1099,
+        "taxable_mark": true, "fsa_mark": true }
+    ],
+    "coupons": [
+      { "description": "$5 off $25, excludes alcohol", "valid_from": "2026-11-01", "valid_to": "2026-11-30" }
+    ],
+    "unreadable": []
+  },
+  "interpretation": {
+    "lines": [
+      { "line_no": 1, "brand": "Kirkland Signature", "name": "Albacore tuna", "category": "canned fish",
+        "pack_count": 8, "unit_size": 7, "unit_measure": "oz", "is_organic": null,
+        "basis": "matches known product" },
+      { "line_no": 2, "brand": "Kirkland Signature", "name": "Ibuprofen 200 mg", "category": "pharmacy",
+        "pack_count": null, "unit_size": null, "unit_measure": null, "is_organic": null,
+        "basis": "expanded KS = Kirkland Signature; pack size not printed" }
+    ],
+    "notes": ""
+  }
+}
+```
+
+### 7.7 Updating a trip
+An update replaces a loaded trip with a corrected or more complete reading of the same receipt. Typical cases: a receipt too long for one photo, where a missing part is photographed later; a cut-off or blurry photo that is retaken; or a price Claude misread.
+
+1. Claude writes a complete trip JSON (7.6) for the whole receipt as now read: every line from every photo, not just the new ones.
+2. `load_trip.py --file trip.json --update <trip_id> [--image photo.jpg ...]` replaces the trip in one transaction. The trip's fields are overwritten, and its lines and adjustments are deleted and loaded again from the file as in 7.1 step 4. The trip keeps its `trip_id`. If anything fails, the trip is left exactly as it was.
+3. The integrity checks (7.2) run again, and `needs_review` is set from this load alone, as for a new trip.
+4. Rows that point into the trip are kept:
+   - Each dispute is re-linked to the new line with the same `line_no`. If that line number no longer exists, the update is refused and nothing changes.
+   - Coupons the trip printed are kept, including any `used_trip_id`. Coupons in the file that aren't recorded yet (matched by description) are added.
+   - Product details and `store_items` mappings are reused, not reset. An update corrects what the receipt printed; product corrections still go to `products` (7.3).
+5. The duplicate-trip check (7.1 step 2) ignores the trip being updated. The update is refused if the new data matches a different trip on any of the keys in 7.1 step 2.
+6. Files: the trip's JSON in the receipts folder is replaced by the new file. Photos given with `--image` are added with the next free suffix (`_2`, `_3`), and existing photos stay.
+
+A long receipt can be loaded in parts, in any order. A first part with no total loads as an incomplete trip (7.1 step 2). Each later part is stopped as "possibly part of trip N", and Claude then writes the combined JSON and runs `--update N`. The date is still required: a part with no printed date (Costco prints it at the bottom) can't be loaded on its own, and Claude waits for the part with the date rather than assume the upload date.
 
 ## 8. Edge Cases & Error Handling
 
-- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "N/A" for unit price. The two Trader Joe's BBQ salmon lines are the example.
+- **Items sold by weight** (grapes, chicken, salmon, ginger, deli food by the pound): store `weight` when the receipt prints it. When it doesn't, `sold_by_weight = 1` with `weight` NULL produces "?" for unit price.
 - **Multi-buy pricing** (3 limes for $1.00, 2 lemons for $1.00): store the quantity and the line total as printed. The unit price is derived.
-- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_c`, not a new line.
-- **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and unit-price reports.
-- **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments`, not on a line.
+- **Discount lines printed separately** (Costco prints "/1901580 -3.00" under the item): fold them into the item's `discount_cents`, not a new line. If an item ever has more than one printed discount line, the amounts are summed and `raw_discount_text` keeps every printed line, separated by newlines.
+- **Deposits and fees** (CRV, bag fees): stored as separate lines with `line_type` of `deposit` or `bag_fee`, excluded from item counts and from `v_unit_price`.
+- **Trip-level promotions** (Grocery Outlet "$5 off $25"): stored in `trip_adjustments` as a negative amount (-500), not on a line. Savings printed against an item, such as member prices or Costco instant savings, fold into that line's `discount_cents` instead and never go in `trip_adjustments`.
 - **Coupon printed on a receipt**: stored in `coupons` with its expiry so it can be listed before it lapses. Whether it was used on a later trip is recorded in `used_trip_id`.
-- **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), each line keeps its own text in `line_items.raw_text`.
-- **Same text, different product** (for example "Granola"): `store_items` is keyed on store, code, and text together, and the user can split a mapping.
-- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt attach to the same trip.
+- **Same product, different receipt text**: handled by `store_items` mapping several text variants to one product. If a store prints the same item code differently on two trips (for example "KS ALBACORE" and "KS ALBACORE TUNA"), both lines map to the same `store_items` row, since the code identifies the item, and each line keeps its own text in `line_items.raw_text`.
+- **Same text, different product** (for example "Granola"): at stores that print item codes, different codes stay separate `store_items` rows even when the text matches. At stores with no codes (Trader Joe's), identical text maps to one row; see Open Questions.
+- **Unreadable or cut-off receipt photos**: the trip is saved with `needs_review = 1` and a note saying which part is missing. Later photos of the same receipt are added by updating the trip (7.7), and are named as in 7.5.
 - **Missing item codes** (Trader Joe's): `item_code` is NULL, and the printed text is the identifier.
-- **Re-running a load or import**: must not crash or double-insert.
+- **Re-running a load**: must not crash or double-insert.
 
 ## 9. Load Summary
 
 Every load prints:
-- Trip loaded (store, date, total), or "already logged".
+- Trip loaded or updated (trip id, store, date, total, or "total not read yet" for an incomplete trip), "already logged" with the existing trip's id, or "possibly part of trip N", or "possibly the same receipt as trip N" (7.1 step 2), so it can be updated (7.7).
 - Lines loaded, and lines needing product identification.
 - Integrity check results, with exact dollar amounts for any mismatch.
-- Suspected duplicate lines.
-- Review questions from 7.4.
+- Review questions from 7.3.
 - Any coupons recorded and their expiry dates.
 
 ## 10. Acceptance Criteria
 
-- [ ] Importing the existing doc produces one trip per dated section (16 as of Nov 10, 2026) whose line totals match the receipt totals in the doc.
-- [ ] Re-importing the same doc produces no new rows and no errors.
-- [ ] Loading the Oct 30, 2026 Costco receipt flags the second albacore tuna line as a suspected duplicate.
-- [ ] Loading the Oct 27, 2026 Grocery Outlet receipt passes the subtotal check ($92.57 in lines, minus the $5.00 promotion, equals $87.57).
-- [ ] `--unit-prices tuna` shows Trader Joe's at about $1.99 per can and Costco at about $2.37 per can, with the Costco duplicate excluded or marked.
-- [ ] A product with no pack size shows "N/A" in unit-price reports, never a guessed number.
-- [ ] `is_organic` is NULL until the user says whether a product is organic (for example, the Safeway Land O'Lakes butter), and organic comparisons exclude NULL rows rather than treating them as non-organic.
+The criteria are tested with made-up trip JSON files committed with the tests, never with real receipts, which can show the identifiers in 13.6. Each criterion states the values its test data needs.
+
+- [ ] Loading the same trip JSON twice adds no new rows the second time and raises no errors.
+- [ ] A trip whose lines total $92.57, with a $5 off $25 promotion (-500 in `trip_adjustments`) and a printed subtotal of $87.57, passes the subtotal check.
+- [ ] With one store selling a single can of tuna for $1.99 and another selling an 8-can pack for $18.99, `v_unit_price` gives 199¢ and about 237¢ per can (`cents_per_pack_unit`).
+- [ ] A product with no pack size has NULL unit-price columns in `v_unit_price` (shown as "?"), never a guessed number.
+- [ ] `is_organic` is NULL until the user says whether a product is organic and organic comparisons exclude NULL rows rather than treating them as non-organic.
 - [ ] Changing a product's pack size changes the unit price on every past trip that uses it.
-- [ ] The FSA report shows the Costco ibuprofen with tax at $12.17.
+- [ ] Loading a receipt that marks one line as FSA-eligible and prints an FSA total of $12.17 stores that line with `fsa_marked = 1` and the trip with `fsa_total_cents = 1217`, and sets that line's product's `is_fsa` to 1. Products with no FSA-marked line keep `is_fsa` NULL.
 - [ ] A load that fails partway leaves no partial trip in the database.
+- [ ] Two trips at the same store on the same date with different printed times both load without `--force`.
+- [ ] A second reading of an already logged receipt with no transaction number, where one line's price was misread and the time was misread by a minute (so key 2 doesn't match), is stopped as "possibly the same receipt as trip N" and loads only with `--force`.
+- [ ] After the top half of a receipt (no total) is loaded, loading the bottom half as a new trip is stopped as "possibly part of trip N", and `--update N` with the combined JSON completes the trip.
+- [ ] Updating a trip with a JSON that adds lines from a second photo replaces its lines, keeps its `trip_id` and any disputes, and reruns the checks. A failed update leaves the trip unchanged.
 - [ ] No money value is stored as a floating-point number.
+- [ ] No card digits, approval codes, membership or loyalty numbers, phone numbers, personal names or prescription numbers appear in the database or in any saved trip JSON (13.6).
 - [ ] Every line has its exact printed text in `raw_text`, and correcting a product's brand, size, or grade leaves `raw_text` unchanged.
-- [ ] Entering a printed expiration date on a line leaves its estimated date unchanged, and the expiration view reports the printed date as the one used.
 
 ## 11. Out of Scope (v1)
 
 - Reading receipt photos automatically in code (done by Claude in conversation).
-- The shelf-price comparison workflow beyond the `shelf_prices` table.
-- A phone or web interface.
+- Shelf-price photos and comparing shelf prices with receipt prices (feature idea 3).
+- A report program. Questions are answered by Claude querying the database and its views (section 5).
+- A phone or web interface of the tool's own. Receipt photos are sent through a Claude conversation, which works from a phone.
 - Multi-user support and sign-in.
 - Currency other than US dollars.
+- FSA reports, FSA totals computed by the tool, and FSA review prompts (feature idea 4). v1 only records FSA marks and totals as printed.
 - Automatic submission of FSA claims or store refund requests.
+- Automatic detection of duplicate charges (feature idea 2).
+- Price predictions, and scraping prices from store websites (future iterations, section 1).
+- Expiration dates, printed or estimated (feature idea 12; planned for v2).
 
 ## 12. Open Questions
 
 - Should products have a parent "generic item" level, such as "canned tuna" above Kirkland, Trader Joe's, and Bumble Bee, for category-wide price comparisons?
 - How should unit prices be shown for items bought in different sizes of the same product (a single can versus an 8-pack)?
-- Should shelf-price photos be matched to products by hand, or suggested by the tool and confirmed?
 - Whether the tool should keep prior values when a product's pack size is corrected, for an audit trail.
+- At stores with no item codes, how should two different products that print identical receipt text be told apart?
+- How long should receipt photos be kept? Keeping them all (the v1 default) preserves the evidence for every trip and dispute. Deleting them after a retention period (for example 90 days, covering return and dispute windows) removes the last copy of identifiers such as card digits and member numbers (13.6), but older trips can then no longer be checked against a photo. Pharmacy receipts may deserve a shorter period, or cropping before upload, since they can show prescription details. If photos are deleted, the verbatim transcript (feature idea 14) becomes the remaining record.
+
+## 13. Design Decisions
+
+Short records of decisions whose reasons aren't obvious from the spec itself, in the style of architecture decision records. Each one gives the decision, why it was made, what else was considered, and a link to the discussion. Add a new entry when a design decision changes, rather than rewriting an old one.
+
+PR = [dknupp/receipt_tracker#2](https://github.com/dknupp/receipt_tracker/pull/2), the review of this spec (November 2026).
+
+### 13.1 Money is stored as integer cents, in `_cents` columns
+- **Decision.** Every money value is an `INTEGER` number of cents, in a column whose name ends in `_cents` (`price_cents`, `total_cents`).
+- **Why.** Floating-point numbers can't hold most decimal amounts exactly, so sums drift by fractions of a cent and integrity checks such as "lines add up to the subtotal" fail on correct receipts. Integers add exactly. The suffix makes the unit visible wherever the column is used, so a value in cents is never mistaken for dollars.
+- **Alternatives considered.** `REAL` dollars, rejected for rounding. `NUMERIC`/`DECIMAL`, rejected because SQLite has no true decimal type and would store such values as floating point anyway. The shorter suffix `_c`, used in early drafts and renamed because it isn't a recognized convention and is easy to misread.
+- **Consequences.** Conversion to dollars happens only for display. Division (unit prices) produces fractional cents in views, which is fine because nothing derived is stored.
+- **Discussion.** [PR thread on the paid-amount CHECK and the rename](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
+
+### 13.2 The loader computes `paid_cents`; it is never taken from the input
+- **Decision.** Each line's `paid_cents` is computed by the loader as `price_cents - discount_cents`. The input never supplies it. If the receipt prints a paid amount for the line, it is compared with the computed value, and a mismatch flags the trip (7.2).
+- **Why.** The schema keeps `CHECK (paid_cents = price_cents - discount_cents)`. If the paid amount came from the input, a single misread number would make the `INSERT` fail and abort the whole load, contradicting the rule that integrity failures flag a trip rather than abort it. Computing the value means the check can never fail a load, and it stays as a safety net against bugs.
+- **Alternatives considered.** Taking the printed paid amount and letting the `CHECK` reject bad lines, rejected because it loses the whole trip. Dropping the column and computing it only in views, rejected because nearly every query uses the paid amount, and a stored, checked column keeps those queries simple.
+- **Consequences.** The trip JSON has `printed_paid_cents` (used only for the comparison), not `paid_cents` (7.6).
+- **Discussion.** [PR thread on the paid-amount CHECK](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818906).
+
+### 13.3 Possible duplicate trips are skipped, and `--force` is the override
+- **Decision.** A trip that matches one already logged is skipped as "already logged", not loaded with a warning. The match uses the first key the receipt supports: transaction number; then store, date and time; then store, date and total plus the same lines (7.1 step 2). `--force` loads a trip anyway when the match was on the second or third key, never on a transaction number. A trip with no total yet is incomplete, and a new trip that may be part of it is stopped so it can be added with `--update`. A near match (same store and date, and equal totals or at least 80% of lines matching) is stopped with a question rather than skipped, since it is probably, but not certainly, the same receipt read differently.
+- **Why.** Loading a duplicate double-counts spending and purchases, which is worse than occasionally asking the user to confirm a genuine repeat trip. A transaction number is unique, so a match on it is never overridden. The weaker keys can match two genuinely separate trips, so they need an override. Store, date and total alone was too weak: a misread total misses a real duplicate, and two small trips with the same total match by accident.
+- **Alternatives considered.** Warning and loading anyway (the original draft), rejected because duplicates would silently skew every total. Total as the only fallback key, rejected as above. A hash of the photo file, rejected because a second photo of the same receipt has a different hash.
+- **Consequences.** Re-running a load is safe and adds nothing. A long receipt can be loaded in parts, in any order.
+- **Discussion.** [PR thread on duplicates without a transaction number](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818910), [PR thread on updating a trip](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818958).
+
+### 13.4 Weighed items are converted to base units using the unit printed on the receipt
+- **Decision.** A by-weight line stores its weight and the unit the receipt printed (`weight`, `weight_unit`). `weight_unit` references `unit_conversions`, and `v_unit_price` converts the line to cents per base unit (g, mL or ct) with that unit's factor. Lines are compared only when they share a base unit, and weight ounces and fluid ounces are separate units.
+- **Why.** Stores print weights in different units (lb at one store, kg at another). Dividing the price by the raw number gives cents per pound for one and cents per kilogram for the other, so they can't be compared. Converting through the printed unit puts both in cents per gram: 2.5 lb of grapes for $4.98 and 1.2 kg for $5.28 come out at 0.439¢ and 0.440¢ per gram.
+- **Alternatives considered.** Assuming every weight is in pounds, rejected because kg receipts would come out wrong by a factor of 2.2. Converting to grams at load and storing only that, rejected because it replaces what the receipt printed, and the spec keeps printed values and derives the rest.
+- **Consequences.** The view exposes `measure_unit` so `cents_per_measure_unit` says what it is per. A weight is always stored with its unit (`CHECK`), and a by-weight line with no printed weight shows "?" in every unit-price column.
+- **Discussion.** [PR thread on by-weight unit prices](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818921).
+
+### 13.5 Receipt photos and trip JSON live in a receipts folder outside git, and that folder is not a backup
+- **Decision.** The loader copies each receipt photo and the trip JSON Claude wrote from it into a receipts folder: a configurable root, for example in iCloud Drive, grouped by year with names such as `2026/2026-10-30_costco_<txn>.jpg` (7.5). The database stores paths relative to that folder. The folder is never committed to git. Keeping the JSON lets a trip be checked against its photo and loaded again after a loader fix, but it is not a full backup: `receipts.db` must be backed up too.
+- **Why.** Every trip must be traceable to its receipt photo, so the photos need a stable home. Relative paths let the folder move or sync without changing rows. Receipts show card digits and where the user shops, so they stay out of the repository. Answers from the post-load review (brands, pack sizes, which product a receipt line is) are stored only in `products` and `store_items`, so the JSON files alone can't rebuild the database.
+- **Alternatives considered.** Storing photos in the database as BLOBs, rejected because it bloats the file and makes photos hard to open. Keeping them in the repository, rejected for privacy. Treating the JSON as temporary, rejected because it is the only exact record of what Claude read.
+- **Consequences.** Files are copied, never moved, and a failed or rejected load copies nothing. The JSON holds no database ids and no loader-computed values. An update (7.7) replaces the trip's JSON and adds new photos with a suffix.
+- **Discussion.** [PR thread on where photos are saved](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4565734859), [PR thread on the trip JSON](https://github.com/dknupp/receipt_tracker/pull/2#discussion_r4560818933).
+
+### 13.6 Identifiers for people and accounts are never stored
+- **Decision.** The database and the trip JSON hold no card digits, card type, approval or authorization codes, terminal or chip-card data, membership and loyalty numbers, phone numbers, email addresses, personal names (such as a member or pharmacy patient name), and prescription numbers or other pharmacy details. Claude leaves them out when it reads a receipt, and the schema has no columns for them. This is the one exception to "everything the receipt prints is recorded" (section 2).
+- **Why.** To reduce the sensitive data the tool keeps, for security. None of these values is needed to compare prices, and the database and JSON files are the ones most likely to be copied, synced or pasted into a conversation. Prescription numbers and patient names are health information, more sensitive than anything financial.
+- **Alternatives considered.** Keeping `trips.card_last4` to match trips to card statements, rejected because store, date and total usually make that match, and nothing in v1 used it. Using approval codes as a duplicate key, rejected because the keys in 7.1 step 2 are enough.
+- **Consequences.** `card_last4` was removed from the schema and the trip JSON. Receipt photos still show all of these values, since v1 can't redact images. They stay in the receipts folder, which is never committed to git (7.5). Whether to delete photos after a retention period is still undecided.
+- **Discussion.** Settled outside the PR, during the review of this spec (November 2026).

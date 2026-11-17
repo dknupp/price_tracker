@@ -1,6 +1,6 @@
-# Receipt Tracker: Feature Ideas
+# Price Tracker: Feature Ideas
 
-A running list of features to build into Receipt Tracker, the grocery trip and price tracking tool. These are brainstorm-stage ideas, not fully specified.
+A running list of features to build into Price Tracker, the tool that tracks prices from grocery receipts. These are brainstorm-stage ideas, not fully specified.
 
 ## 1. Post-trip receipt review
 
@@ -16,6 +16,7 @@ Right at checkout, the user photographs the receipt and the tool immediately sca
 
 - **Why:** On the October 30, 2026 Costco trip, the Kirkland Signature albacore tuna was charged twice, but only one 8-pack was bought. Catching that while still in the store means the user can get a refund at the service desk instead of going back later.
 - **Flag same-item repeats:** Highlight lines with the same item code or name appearing more than once, and ask whether the quantity is really right.
+- **Design sketch (removed from the v1 spec):** a `line_items.suspected_duplicate` flag (0/1), set on load when another line in the same trip has the same item code (or the same text when there is no code) and the same price. Flagged lines appear in the load summary, and the user confirms one (creating a `disputes` row) or clears it. It was dropped from v1 because buying several of the same item is common and true double charges are rare. Open issues carried over: some stores print one line per unit, so repeats are normal there; and it's unclear whether to flag both lines or only the later one. A `--duplicates` report listed flagged lines.
 
 ## 3. Shelf price versus receipt price comparison
 
@@ -23,6 +24,7 @@ While shopping, the user uploads photos of shelf price tags. After checkout, the
 
 - **Match photos to receipt lines:** Pair each shelf photo with its receipt item.
 - **Flag mismatches:** Report any item charged at a different price than the shelf tag, including missed sale prices or discounts, so the user can ask for a correction before leaving.
+- **Storage sketch (removed from the v1 spec):** a `shelf_prices` table with store, product (NULL until matched), shelf price in cents, photo path, and when it was seen. Open question carried over: should shelf photos be matched to products by hand, or suggested by the tool and confirmed?
 
 ## 4. FSA item flagging
 
@@ -31,6 +33,8 @@ Whenever a receipt is logged, the tool always flags any FSA-eligible items, so n
 - **Flag on every receipt:** Mark FSA-eligible lines automatically, using the receipt's own markers where they exist (for example, the Costco receipt on October 30, 2026 listed the Kirkland Signature ibuprofen as FSA-eligible, with a separate FSA total of $12.17 including tax).
 - **Ask about likely candidates:** If a receipt doesn't mark FSA items but a line looks like one (medicine, first aid, sunscreen, and similar), ask the user whether it should be flagged.
 - **Show an FSA total per trip:** Add the FSA-eligible amount, with tax, to each trip's footer so it's easy to claim.
+- **Already in v1 (recorded only):** `line_items.fsa_marked` (the receipt's per-line mark), `trips.fsa_total_cents` (a printed FSA total) and `products.is_fsa` (NULL unknown, 1 once any receipt marks the product, 0 only when the user says so). Nothing in v1 reads them.
+- **Still to design:** a report or computed FSA total, and asking about unmarked items that look eligible. The hard part is each line's share of tax. Approach discussed: store no tax rate (receipts print the amount, not the rate, and one trip can have more than one rate); split the printed `tax_cents` across taxable lines in proportion to the amount paid, with rounding that makes the shares add up exactly. A trip with any line of unknown taxability can't be split, and receipts that print two tax lines aren't handled. A printed `fsa_total_cents`, when present, is the check for any computed total.
 
 ## 5. Shopping list price optimizer
 
@@ -114,9 +118,11 @@ Add an expiration date column for food items, so each purchase can carry a use-b
 
 - **Capture the printed date:** Record the expiration date read from the package for each food item, either when it's logged or during the post-trip review, since receipts don't print it. This goes in its own "printed expiration" field and stays empty unless someone actually entered it.
 - **Seed an estimate by item type:** Based on what the item is, pre-fill a separate "estimated expiration" date from a typical shelf life, such as a few days for fresh fish and herbs, a couple of weeks for milk, or years for canned goods. The user can confirm or change it. Keeping the estimate in its own field means it is never mistaken for the date printed on the package, and entering a printed date later doesn't erase the estimate.
+- **Example question:** "Which items have I purchased recently that might go bad soon?" Claude would estimate roughly how long each perishable item lasts and fill in the estimate when the trip is loaded.
+- **Open issue from the spec review:** the typical shelf life per item type needs a source, such as a table by category or Claude's own estimate at load time. An estimate stored at load time also goes stale if the item's category is later corrected.
 - **Make it optional:** Many items (household goods, deposits, fees) have no expiration date, so the field should be allowed to stay empty, not guessed.
 - **Connect to other features:** The date could feed the recipe suggestions, so items closest to expiring are used first, and the shopping list, so the tool doesn't suggest buying something that's already stocked and still good.
-- **Database change:** Two new nullable date columns on the line items table, `expiration_printed` and `expiration_estimated`, since the dates belong to a specific purchase, not to the product in general. A view returns the printed date when there is one and falls back to the estimate, and also says which of the two it used. That view is now written into the database spec.
+- **Database change:** Two new nullable date columns on the line items table, `expiration_printed` and `expiration_estimated`, since the dates belong to a specific purchase, not to the product in general. A view returns the printed date when there is one and falls back to the estimate, and also says which of the two it used. That view was drafted in the v1 database spec and then moved back here: this is a v2 feature.
 
 ## 13. Markdown column and regular price tracking
 
@@ -126,7 +132,17 @@ Show the markdown as its own visible column, so it's clear how much of a price w
 - **Add a markdown percent:** Show the discount as a percent of the regular price, such as 43% off, so deals are easy to compare across items.
 - **Compare on both prices:** In price comparisons and the shopping list optimizer, show the sale price and the regular price side by side, so a one-time markdown isn't mistaken for the normal price. The Costco chili at $2.33 a can was $3.13 without its $4.80 markdown.
 - **Flag how often an item goes on sale:** Over time, note which items are usually bought at a markdown and which are not, to guess whether a sale price is likely to come back.
-- **Database note:** The line items table already stores `price_c` (regular), `discount_c` (markdown), and `paid_c`, so this is mostly a reporting and display change, not a new stored column. The database spec adds a markdown view that lists discounted lines with the regular price, markdown amount, amount paid, and percent off.
+- **Database note:** The line items table already stores `price_cents` (regular), `discount_cents` (markdown), and `paid_cents`, so this is mostly a reporting and display change, not a new stored column. The database spec adds a markdown view that lists discounted lines with the regular price, markdown amount, amount paid, and percent off.
+
+## 14. Verbatim receipt transcript
+
+Save a transcript of every printed line of the receipt, in order and exactly as printed, alongside the structured trip data.
+
+- **Why:** The trip JSON records only the fields designed so far. A transcript keeps everything else the receipt prints (register and lane numbers, the "items sold" count, survey codes), so a field added later can be pulled from saved transcripts instead of reopening hundreds of photos. It is also searchable and much faster to reread than a photo.
+- **Where it goes:** A `receipt.transcript` field in the trip JSON (a list of printed lines), so it is saved in the receipts folder next to the photo and reloaded by `--update`. It stays out of the database until something needs to query it.
+- **Rules:** Copy each line verbatim, keeping the spacing so the receipt's fixed-width columns stay aligned. Nothing is interpreted or corrected. Lines holding identifiers for people or accounts (card digits, member numbers, names, prescription details) are replaced with `[omitted]`, as in spec 13.6. Unreadable parts are marked, not guessed.
+- **Limits:** A transcript is Claude's reading, not the evidence. A misread in it can only be caught by checking the photo, and barcodes, faded sections and handwriting don't come through. So while the photo is kept, the photo is the record and the transcript is a convenience.
+- **Becomes important if photos are deleted:** If photos are ever deleted after a retention period (spec section 12), the transcript is the only remaining record of everything the receipt printed.
 
 ## Open questions
 
